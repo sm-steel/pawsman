@@ -4,6 +4,7 @@
 //! `pawsman run` reports) can render a message, a help line and decide whether to retry.
 #![forbid(unsafe_code)]
 
+use std::borrow::Cow;
 use std::fmt;
 
 /// A namespaced, stable error code such as `net::tls_handshake`.
@@ -46,6 +47,7 @@ impl fmt::Display for ErrorCode {
 
 /// Whether repeating the same operation later may succeed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Retry {
     /// Transient: network, rate limit, server restart.
     Retryable,
@@ -58,8 +60,9 @@ pub trait ErrorInfo: std::error::Error {
     /// Stable machine-readable code.
     fn code(&self) -> ErrorCode;
 
-    /// One imperative sentence telling the user what to do, if there is something to do.
-    fn help(&self) -> Option<&'static str> {
+    /// One imperative sentence telling the user what to do, if there is something to do. It may
+    /// name the bad input, so it can borrow from the error.
+    fn help(&self) -> Option<Cow<'_, str>> {
         None
     }
 
@@ -119,6 +122,46 @@ mod tests {
         fn code(&self) -> ErrorCode {
             ErrorCode::new("test::fake")
         }
+    }
+
+    #[derive(Debug)]
+    struct UnknownVar(String);
+
+    impl fmt::Display for UnknownVar {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "unknown variable `{}`", self.0)
+        }
+    }
+
+    impl std::error::Error for UnknownVar {}
+
+    impl ErrorInfo for UnknownVar {
+        fn code(&self) -> ErrorCode {
+            ErrorCode::new("model::unknown_var")
+        }
+
+        fn help(&self) -> Option<Cow<'_, str>> {
+            Some(
+                format!(
+                    "Define `{}` in the active environment or in `.env`.",
+                    self.0
+                )
+                .into(),
+            )
+        }
+    }
+
+    #[test]
+    fn help_can_name_the_bad_input() {
+        let err = UnknownVar("token".to_owned());
+
+        let help = err.help();
+
+        assert_eq!(
+            help.as_deref(),
+            Some("Define `token` in the active environment or in `.env`."),
+            "the docs' example help line is expressible"
+        );
     }
 
     #[test]
