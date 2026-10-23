@@ -26,13 +26,15 @@ impl ErrorCode {
     /// The part before `::`, which names the docs folder (`docs/errors/<namespace>/`).
     #[must_use]
     pub fn namespace(self) -> &'static str {
-        ""
+        self.0
+            .split_once("::")
+            .map_or("", |(namespace, _)| namespace)
     }
 
     /// The part after `::`, which names the docs page (`docs/errors/<namespace>/<slug>.md`).
     #[must_use]
     pub fn slug(self) -> &'static str {
-        ""
+        self.0.split_once("::").map_or(self.0, |(_, slug)| slug)
     }
 }
 
