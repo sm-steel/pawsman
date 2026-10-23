@@ -12,7 +12,7 @@ Bruno's Electron main process exposes its whole backend to the renderer as IPC h
 ## Handlers by area
 
 | Area | Channels (prefix `renderer:` unless shown) | pawsman |
-|---|---|---|
+| --- | --- | --- |
 | Requests | `send-http-request`, `cancel-http-request`, `load-request`, `load-large-request`, `load-request-via-worker`, `save-request`, `save-multiple-requests`, `save-response-to-file` | M1 |
 | Collection tree | `create-collection`, `open-collection`, `open-multiple-collections`, `mount-collection`, `mount-collection-v2`, `clone-collection`, `rename-collection`, `remove-collection`, `new-folder`, `new-request`, `clone-folder`, `delete-item`, `move-item`, `move-file-item`, `move-folder-item`, `move-item-cross-format`, `rename-item-name`, `rename-item-filename`, `resequence-items`, `save-collection-root`, `save-folder-root`, `update-bruno-config`, `ignore-folder`, `scan-for-bruno-files`, `add-collection-watcher`, `find-unique-folder-name` | M1 |
 | Scratch and transient requests | `mount-workspace-scratch`, `save-scratch-request`, `save-transient-request`, `delete-transient-requests` | M1 |
