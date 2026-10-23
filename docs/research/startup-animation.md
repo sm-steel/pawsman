@@ -58,3 +58,24 @@ stateDiagram-v2
 - Cadence test: once done, the loop has no pending timer.
 - 256-colour test: no `Color::Rgb` remains.
 - Visual PNG files reviewed before merge.
+
+## Prototype findings
+
+From the M0 PoC (`pawsman-poc/splash`, tachyonfx 0.25.2, ratatui 0.30.2) in kitty 0.49.2.
+
+| Measure | Result |
+| --- | --- |
+| Effect | `parallel`: `coalesce` (500 ms, QuadOut, seeded, `CellFilter::Text`), `fade_from_fg(BG)` (750 ms, CubicOut, from 0 ms), `delay(550, ping_pong(hsl_shift_fg([40, 0, 12], 300 ms, SineInOut)))`; done at about 1.17 s |
+| Live run | 59 frames in 1.21 s, then no redraw until input |
+| Bytes | 270 KB for the whole run (about 4.6 KB per frame for a 44×5 logo); the first version, with effects over the whole screen, wrote 20 KB per frame |
+| Skip | a key mid-animation jumps to the final frame (`(skipped)` at 1.10 s) |
+| 256 colours | readable gradient through the xterm-256 cube; no `Color::Rgb` left |
+
+Rules for M1 that came out of it:
+
+- **Advance in ticks, apply once.** `sequence` and `delay` move one stage per `process` call, so a long delta stalls them; and each call blends with what is already in the buffer, so ticks applied to the same buffer compound (a fade restarts from its own output, a lightness shift runs to white). Step every tick but the last on a scratch copy of the freshly painted buffer, then apply the last tick to the real one.
+- **Confine effects to the logo's rectangle**: effects over the whole area recolour blank cells and multiply the bytes per frame.
+- **A resize redraws, never skips**: a tiling window manager resizes a new window right after start.
+- **No sleep before the fade**: the logo must start at the background colour, or it flashes.
+- **The hue sweep returns to the base colours** (`ping_pong`), so the last animated frame equals the static logo.
+- Over SSH, halve the frame rate (about 30 fps) to halve the bytes; the effect is time-based, so it keeps its length.
