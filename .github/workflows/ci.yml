@@ -1,4 +1,4 @@
-# Quality gates and tests (docs/TESTING.md § CI, docs/CODE-ARCHITECTURE.md#quality-tooling).
+# Quality gates and tests (docs/TESTING.md, docs/CODE-ARCHITECTURE.md §2).
 # Branch protection requires only `required-checks`, which aggregates every job here.
 name: ci
 

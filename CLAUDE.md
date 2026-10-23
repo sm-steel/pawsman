@@ -44,11 +44,11 @@ Rust rules, in short:
 
 Verifying UI changes: use the `visual-check` skill.
 
-Gates: `CARGO_BUILD_WARNINGS=deny cargo clippy --workspace --all-targets --locked`, `cargo nextest run --workspace`, `tools/check-deps.sh`, `markdownlint-cli2 "**/*.md"`, `typos`.
+Gates: `CARGO_BUILD_WARNINGS=deny cargo clippy --workspace --all-targets --locked`, `cargo nextest run --workspace`, `tools/check-deps.sh`, `markdownlint-cli2 "**/*.md" "#target" "#node_modules" "#.superpowers"`, `typos`.
 
 ## Tools
 
-All pinned in `mise.toml`; Rust in `rust-toolchain.toml`.
+Pinned in `mise.toml`; Rust in `rust-toolchain.toml`. Added with the milestone that first needs them: the insta CLI (M1), cargo-fuzz (M5, nightly). rea is the user's global tool.
 
 - Tests: [cargo-nextest](https://nexte.st/) · [insta](https://insta.rs/) · [proptest](https://proptest-rs.github.io/proptest/) · [cargo-fuzz](https://rust-fuzz.github.io/book/) · [cargo-mutants](https://mutants.rs/)
 - Quality: [cargo-hack](https://github.com/taiki-e/cargo-hack) · [cargo-deny](https://embarkstudios.github.io/cargo-deny/) · [typos](https://github.com/crate-ci/typos) · [gitleaks](https://github.com/gitleaks/gitleaks) · [actionlint](https://github.com/rhysd/actionlint) · [zizmor](https://docs.zizmor.sh/) · [markdownlint-cli2](https://github.com/DavidAnson/markdownlint-cli2) · [lefthook](https://lefthook.dev/)

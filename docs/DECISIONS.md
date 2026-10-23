@@ -12,7 +12,9 @@ One line per non-obvious decision.
 - **Ctrl-Q quits** — Ctrl-C and Ctrl-V stay copy and paste (→ [rules/tui.md §5](../rules/tui.md)).
 - **Cell-based tachyonfx splash** — kitty frame animation costs too much over SSH (→ [startup animation](research/startup-animation.md)).
 - **typos learns `ratatui`** — its dictionary corrects the crate name to "ratatouille" on every mention (`_typos.toml`).
-- **The agent self-approves** — tests, snapshots, visuals and dependencies are reviewed and approved by the agent, with reasons recorded (→ [rules §1](../rules/rust-project.md#1-working-agreement)).
+- **Dev tools straight from GitHub when the mise mirror lacks them** — a one-off `MISE_URL_REPLACEMENTS='{}' mise install`; the shared mise config is never edited.
+- **Public repository** — GitHub Actions would not run for the private repo on this account; the full history was scanned with gitleaks before the switch.
+- **The agent self-approves** — tests, snapshots, visuals, dependencies, merges of its own PRs and minor review findings are decided by the agent, with reasons recorded (→ [rules §1](../rules/rust-project.md#1-working-agreement)).
 - **Own kitty encoder, not ratatui-image's** — ratatui-image 11.1.0 sends uncompressed RGBA by default, has no PNG path, and enables its opt-in zlib only through its own probe; pawsman sends PNG or zlib RGBA, whichever is smaller, through its single probe (→ [kitty graphics](research/kitty-graphics-over-ssh.md#decision-for-m1)).
 - **Probe timeout 1 s plus 150 ms grace** — a silent terminal costs 1.15 s once and leaks no reply bytes (→ [kitty graphics](research/kitty-graphics-over-ssh.md#probe)).
 - **Button-event mouse tracking only** — crossterm's `EnableMouseCapture` reports every motion, which would wake the loop (→ [keyboard and clipboard](research/keyboard-and-clipboard.md#mouse)).

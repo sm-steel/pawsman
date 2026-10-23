@@ -23,7 +23,7 @@ What went wrong, following the Rust API guidelines ([C-GOOD-ERR](https://rust-la
 
 ## Page template
 
-One page per code at `docs/errors/<namespace>/<slug>.md` (`ErrorCode::namespace` and `ErrorCode::slug`), e.g. `model/unknown_var.md` for `model::unknown_var`:
+Every code has a namespace. One page per code at `docs/errors/<namespace>/<slug>.md` (`ErrorCode::namespace` and `ErrorCode::slug`), e.g. `model/unknown_var.md` for `model::unknown_var`:
 
 ```markdown
 # `model::unknown_var`

@@ -1,4 +1,4 @@
-# cargo-deny policy (docs/CODE-ARCHITECTURE.md §2, quality tooling). Reference: https://embarkstudios.github.io/cargo-deny/
+# cargo-deny policy and crate boundaries (docs/CODE-ARCHITECTURE.md §2). Reference: https://embarkstudios.github.io/cargo-deny/
 
 [graph]
 all-features = true

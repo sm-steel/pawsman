@@ -5,7 +5,7 @@ Rules for `crates/pawsman-tui`. [rust-project.md](rust-project.md) wins every co
 1. **The terminal belongs to the app.**
    - Never write to stdout or stderr directly; `std::io::stdout`/`stderr` are banned by clippy.
    - Output goes through `term::Term`: frames, graphics, OSC 52, the title, the bell.
-   - The single exception is the one exit line printed in `main` after the terminal has been restored.
+   - The single exception is the one exit line printed in `main` after the terminal has been restored. `pawsman run` never starts the TUI; its report writer owns stdout and stderr.
    - Logs go to the log file only.
 2. **Every mode is undone.**
    - Each mode the app turns on is listed in `term::MODES` and undone in `Term::restore`, newest first: mouse tracking (button events only: `CSI ? 1000 h`, `1002`, `1006`; never any-motion `1003`), focus events, bracketed paste, kitty keyboard flags, alternate screen, raw mode.
@@ -31,7 +31,7 @@ Rules for `crates/pawsman-tui`. [rust-project.md](rust-project.md) wins every co
 8. **Clipboard.** Copy goes out as OSC 52 through `Term::copy`, which works in kitty and over SSH, wrapped in DCS passthrough inside tmux. arboard runs on its own thread and only in local sessions; over SSH a read says the clipboard is not reachable and points to the terminal's own paste.
 9. **Images.**
    - Modes: Kitty (graphics protocol through Unicode placeholders), Sixel, Blocks (half blocks), Off (a text placeholder). `--images auto|kitty|sixel|blocks|off`; `auto` uses the probe.
-   - **The probe runs before input**, after `Term::setup` and the panic hook and before the input thread starts. It writes the kitty graphics query, the keyboard query (`CSI ? u`), `CSI 16 t` and DA1, reads the replies from `/dev/tty` with a timeout, then reads briefly more to swallow late replies. Inside tmux it ends on a second DA1 sent through passthrough, because tmux answers the first DA1 itself. The input parser also drops probe-shaped replies that arrive later, so no reply byte reaches the key handler. The parser is a pure function with its own tests. Timeouts come from [docs/research/kitty-graphics-over-ssh.md](../docs/research/kitty-graphics-over-ssh.md).
+   - **The probe runs before input**, after `Term::setup` and the panic hook and before the input thread starts. It writes the kitty graphics query, the keyboard query (`CSI ? u`), `CSI 16 t`, a DECRQSS SGR query for truecolor (with `COLORTERM` from the env snapshot) and DA1, reads the replies from `/dev/tty` with a timeout, then reads briefly more to swallow late replies. Inside tmux it ends on a second DA1 sent through passthrough, because tmux answers the first DA1 itself. The input parser also drops probe-shaped replies that arrive later, so no reply byte reaches the key handler. The parser is a pure function with its own tests. Timeouts come from [docs/research/kitty-graphics-over-ssh.md](../docs/research/kitty-graphics-over-ssh.md).
    - Inside tmux, graphics are wrapped in DCS passthrough.
    - **Placeholders are ordinary cells**: `U+10EEEE` plus row and column diacritics, with the image id as the truecolour foreground. Scrolling, clipping and overlays need nothing else. A placeholder cell is never selectable or copyable.
    - **Images are sent before the frame that shows them**, inline (`t=d`, base64 chunks of 4096 bytes, `q=2`), so SSH works and nothing answers on the input.
