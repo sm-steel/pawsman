@@ -79,4 +79,4 @@ Rules for M1 that came out of it:
 - The tagline is centred by grapheme width, not byte length.
 - **No sleep before the fade**: the logo must start at the background colour, or it flashes.
 - **The hue sweep returns to the base colours** (`ping_pong`), so the last animated frame equals the static logo.
-- Over SSH, consider about 30 fps to halve the bytes (unmeasured over a real link; the effect is time-based, so it keeps its length).
+- Over SSH (the [matrix box](kitty-graphics-over-ssh.md#matrix)): 70 frames in 1.23 s, 320 KB in total, about 4.6 KB per frame, the same as locally. No frame-rate cap is needed.

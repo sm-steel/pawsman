@@ -14,6 +14,9 @@ One line per non-obvious decision.
 - **typos learns `ratatui`** — its dictionary corrects the crate name to "ratatouille" on every mention (`_typos.toml`).
 - **Dev tools straight from GitHub when the mise mirror lacks them** — a one-off `MISE_URL_REPLACEMENTS='{}' mise install`; the shared mise config is never edited.
 - **Public repository** — GitHub Actions would not run for the private repo on this account; the full history was scanned with gitleaks before the switch.
+- **F5 sends in every terminal** — Ctrl-Enter is plain Enter in tmux and legacy terminals, and xterm drops Alt-Enter (→ [keyboard and clipboard](research/keyboard-and-clipboard.md#over-ssh-in-tmux-and-in-xterm)).
+- **Images Off in a non-UTF-8 tmux** — tmux rewrites kitty placeholders and half blocks to `_` without UTF-8 (→ [kitty graphics](research/kitty-graphics-over-ssh.md#matrix)).
+- **Terminal matrix in Docker** — sshd, tmux and xterm in a throw-away container reached over SSH, so nothing on the desktop changes (`pawsman-poc/matrix`).
 - **The agent self-approves** — tests, snapshots, visuals, dependencies, merges of its own PRs and minor review findings are decided by the agent, with reasons recorded (→ [rules §1](../rules/rust-project.md#1-working-agreement)).
 - **Own kitty encoder, not ratatui-image's** — ratatui-image 11.1.0 sends uncompressed RGBA by default, has no PNG path, and enables its opt-in zlib only through its own probe; pawsman sends PNG or zlib RGBA, whichever is smaller, through its single probe (→ [kitty graphics](research/kitty-graphics-over-ssh.md#decision-for-m1)).
 - **Probe timeout 1 s plus 150 ms grace** — a silent terminal costs 1.15 s once and leaks no reply bytes (→ [kitty graphics](research/kitty-graphics-over-ssh.md#probe)).
