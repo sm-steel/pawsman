@@ -15,11 +15,10 @@ What the M0 probe PoC (`pawsman-poc/probe`) showed about the capability probe an
 
 Probe timeout for M1: 1 s plus 150 ms grace. Over SSH the round trip adds the link's RTT, which stays far below 1 s on usable links; a slower link degrades to half blocks instead of hanging, **but a reply arriving after the grace period reaches the input**.
 
-Open for M1 (issue #42):
+Open for M1 (issue #42); the tmux behaviour is measured in [Matrix](#matrix):
 
 - **Inside tmux, DA1 is answered by tmux itself, at once**, while the passthrough-wrapped graphics query is answered later by the outer terminal, so the probe stops before that reply arrives. Inside tmux the probe must end on a second DA1 sent through passthrough, answered by the outer terminal after the graphics reply.
 - The input parser discards probe-shaped replies (`APC G…`, `CSI ?…u`, `CSI 6;…t`, `CSI ?…c`) that arrive late, so a slow link never types them.
-- The PoC never wrapped the query in passthrough; the tmux expectation below is untested.
 
 ## ratatui-image 11.1.0
 
@@ -36,14 +35,23 @@ pawsman implements its own kitty encoder in `pawsman-tui` (`term::graphics`) ins
 - Placeholders are drawn as ordinary cells, as ratatui-image does.
 - ratatui-image remains an option for the sixel and half-block fallbacks, behind the same `Caps`.
 
-## Not yet run
+## Matrix
 
-These rows need setup that this machine lacks; the plan's matrix stays open for them (issue #5):
+Run from kitty 0.49.2 on the desktop into a throw-away Docker box (`pawsman-poc/matrix`: Debian trixie, OpenSSH, tmux 3.5a, xterm on Xvfb), over a real SSH connection.
 
-| Row | Needs |
-| --- | --- |
-| kitty over SSH | key-based `ssh localhost` (not set up here; never set up automatically) |
-| tmux with and without `allow-passthrough`, SSH then tmux | tmux (not installed) |
-| a non-kitty terminal | foot, alacritty or another terminal (none installed) |
+| Row | Probe result | Time | Image |
+| --- | --- | --- | --- |
+| kitty, local | graphics, keyboard, 10×20 px cell | 18 ms | kitty, correct |
+| kitty over SSH | graphics, keyboard, 10×20 px cell | 7–21 ms | kitty, correct |
+| SSH → tmux, passthrough on, UTF-8 | graphics (through passthrough), no keyboard protocol | 19–21 ms | kitty, correct |
+| SSH → tmux, passthrough on, **no UTF-8 locale** | graphics | 20 ms | **broken**: tmux replaces every `U+10EEEE` placeholder with `_` |
+| SSH → tmux, passthrough off | no graphics; tmux's own DA1 claims sixel | 150 ms | ratatui-image still picked kitty and drew `_` rows |
+| xterm (`-ti vt340`) on Xvfb | sixel, no cell size (`CSI 16 t` unanswered) | 0.2 ms | sixel, correct |
 
-Expected from the protocol and the code: over SSH nothing changes except latency (`t=d` needs no shared files); inside tmux without passthrough the graphics query gets no reply, so the probe falls back to half blocks.
+Findings:
+
+- **tmux needs UTF-8.** Over SSH the session usually has no `LANG`; tmux then rewrites non-ASCII cells (placeholders, and also half blocks and box drawing). `tmux -u` or a UTF-8 `LANG` fixes it; tmux's `RGB` terminal feature does not matter.
+- **Inside tmux only the outer terminal's DA1 counts.** tmux answers the first DA1 itself and claims sixel even when the outer terminal (kitty) cannot show sixel.
+- **The two-DA1 probe works**: inside tmux the passthrough-wrapped graphics query is answered, then the outer DA1, in about 20 ms. Without passthrough the second DA1 never comes; waiting only a grace period after tmux's own DA1 ends the probe in 150 ms instead of 1.15 s. The grace must cover the SSH round trip, so M1 uses 500 ms inside tmux.
+- **ratatui-image's own detection is wrong under tmux without passthrough**: it chose kitty and drew garbage, which pawsman's probe-driven choice avoids.
+- xterm answers DA1 with sixel (attribute 4) but not `CSI 16 t`; the cell size then comes from `TIOCGWINSZ` pixel fields or a default.

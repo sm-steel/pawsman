@@ -42,6 +42,15 @@ crossterm's `EnableMouseCapture` turns on any-motion tracking (mode 1003): every
 - Inside tmux the sequence is wrapped in DCS passthrough (`ESC P tmux; ESC <osc> ESC \`); not run here (no tmux on the test machine).
 - Over SSH the sequence is identical; the terminal, not the remote host, owns the clipboard.
 
-## Not yet run
+## Over SSH, in tmux and in xterm
 
-tmux, SSH and a non-kitty terminal: same gaps as [kitty graphics over SSH](kitty-graphics-over-ssh.md#not-yet-run).
+From the [matrix box](kitty-graphics-over-ssh.md#matrix):
+
+| Row | Keyboard protocol | Ctrl-Enter | Alt-Enter | OSC 52 copy |
+| --- | --- | --- | --- | --- |
+| kitty over SSH | on | distinct | distinct | reached the desktop clipboard |
+| SSH → tmux | off (tmux 3.5a does not pass it; `extended-keys` did not change that) | plain Enter | distinct | reached the desktop clipboard through DCS passthrough |
+| xterm | off | plain Enter | **not received** (also with `metaSendsEscape`) | not tested (no clipboard on Xvfb) |
+
+- Send therefore has a third key that every terminal delivers: **F5**, next to Ctrl-Enter and Alt-Enter.
+- xterm without a UTF-8 locale garbles box drawing, like tmux.
