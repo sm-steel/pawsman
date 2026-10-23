@@ -44,11 +44,11 @@ Rust rules, in short:
 
 Verifying UI changes: use the `visual-check` skill.
 
-Gates: `CARGO_BUILD_WARNINGS=deny cargo clippy --workspace --all-targets --locked`, `cargo nextest run --workspace`, `tools/check-deps.sh`, `markdownlint-cli2 "**/*.md"`, `typos`.
+Gates: `CARGO_BUILD_WARNINGS=deny cargo clippy --workspace --all-targets --locked`, `cargo nextest run --workspace`, `tools/check-deps.sh`, `markdownlint-cli2 "**/*.md" "#target" "#node_modules" "#.superpowers"`, `typos`.
 
 ## Tools
 
-All pinned in `mise.toml`; Rust in `rust-toolchain.toml`.
+Pinned in `mise.toml`; Rust in `rust-toolchain.toml`. Added with the milestone that first needs them: the insta CLI (M1), cargo-fuzz (M5, nightly). rea is the user's global tool.
 
 - Tests: [cargo-nextest](https://nexte.st/) · [insta](https://insta.rs/) · [proptest](https://proptest-rs.github.io/proptest/) · [cargo-fuzz](https://rust-fuzz.github.io/book/) · [cargo-mutants](https://mutants.rs/)
 - Quality: [cargo-hack](https://github.com/taiki-e/cargo-hack) · [cargo-deny](https://embarkstudios.github.io/cargo-deny/) · [typos](https://github.com/crate-ci/typos) · [gitleaks](https://github.com/gitleaks/gitleaks) · [actionlint](https://github.com/rhysd/actionlint) · [zizmor](https://docs.zizmor.sh/) · [markdownlint-cli2](https://github.com/DavidAnson/markdownlint-cli2) · [lefthook](https://lefthook.dev/)
@@ -68,5 +68,8 @@ All pinned in `mise.toml`; Rust in `rust-toolchain.toml`.
 - [Rust pitfalls](docs/RUST-PITFALLS.md): known Rust problems and mitigations
 - [Error pages](docs/errors/README.md): message wording and page template
 - [Bruno feature inventory](docs/re/bruno-feature-inventory.md): Bruno's backend features from rea, mapped to milestones
-- [Startup animation](docs/research/startup-animation.md): splash technique and crates
+- [Startup animation](docs/research/startup-animation.md): splash technique, crates and prototype findings
+- [Kitty graphics over SSH](docs/research/kitty-graphics-over-ssh.md): probe, image transmission, open matrix rows
+- [Keyboard and clipboard](docs/research/keyboard-and-clipboard.md): key encodings, mode stack, mouse, OSC 52
+- [Rhai sandbox](docs/research/rhai-sandbox.md): limits, cost, M2 script API
 - PoCs: `~/src/github/pawsman-poc` (never in this repo)

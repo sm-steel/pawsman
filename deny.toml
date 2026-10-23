@@ -1,4 +1,4 @@
-# cargo-deny policy (docs/CODE-ARCHITECTURE.md §2, quality tooling). Reference: https://embarkstudios.github.io/cargo-deny/
+# cargo-deny policy and crate boundaries (docs/CODE-ARCHITECTURE.md §2). Reference: https://embarkstudios.github.io/cargo-deny/
 
 [graph]
 all-features = true
@@ -36,6 +36,8 @@ deny = [
   # Crate boundaries (CODE-ARCHITECTURE §2): heavy dependencies only through their owning crate.
   { crate = "tokio", wrappers = ["pawsman-net", "pawsman-grpc", "pawsman-mock", "reqwest", "hyper", "hyper-util", "h2", "tower", "tonic", "tokio-util", "tokio-stream", "tokio-rustls", "tokio-tungstenite", "axum"], reason = "async only on the net runtime thread (CODE-ARCHITECTURE §3)" },
   { crate = "ratatui", wrappers = ["pawsman-tui", "tachyonfx", "ratatui-image", "tui-big-text"], reason = "drawing only in pawsman-tui" },
+  { crate = "ratatui-core", wrappers = ["pawsman-tui", "ratatui", "ratatui-widgets", "ratatui-crossterm", "tachyonfx", "ratatui-image", "tui-big-text"], reason = "drawing only in pawsman-tui" },
+  { crate = "ratatui-widgets", wrappers = ["pawsman-tui", "ratatui", "tui-big-text"], reason = "drawing only in pawsman-tui" },
   { crate = "crossterm", wrappers = ["pawsman-tui", "ratatui", "ratatui-crossterm"], reason = "terminal access only in pawsman-tui" },
   { crate = "rhai", wrappers = ["pawsman-script"], reason = "scripting only through pawsman-script" },
   { crate = "tonic", wrappers = ["pawsman-grpc"], reason = "gRPC only in pawsman-grpc" },

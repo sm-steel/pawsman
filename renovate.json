@@ -1,6 +1,6 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "description": "Shared Renovate preset for semoxide repositories: every pin is bumped by automation (CODE-ARCHITECTURE \u00a77).",
+  "description": "Every pin is bumped by automation: Cargo, mise tools, the Rust toolchain, GitHub Actions and `# renovate:` comments.",
   "extends": [
     "config:recommended",
     "helpers:pinGitHubActionDigests"
@@ -12,7 +12,7 @@
   "semanticCommitType": "chore",
   "semanticCommitScope": "deps",
   "labels": [
-    "area:ci"
+    "area:tooling"
   ],
   "rangeStrategy": "pin",
   "packageRules": [
@@ -27,21 +27,14 @@
         "rust-toolchain"
       ],
       "groupName": "Rust toolchain"
-    },
-    {
-      "matchDepNames": [
-        "semgrep"
-      ],
-      "groupName": "semgrep"
     }
   ],
   "customManagers": [
     {
       "customType": "regex",
-      "description": "Versions annotated with `# renovate: datasource=\u2026 depName=\u2026` (or `//` in JSONC) on the line above.",
+      "description": "Versions annotated with `# renovate: datasource=… depName=…` on the line above.",
       "managerFilePatterns": [
         "/(^|/)lefthook\\.yml$/",
-        "/(^|/)\\.zed/settings\\.json$/",
         "/(^|/)\\.github/workflows/.+\\.ya?ml$/"
       ],
       "matchStrings": [

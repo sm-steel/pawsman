@@ -1,6 +1,6 @@
 # pawsman: program design
 
-Status: draft, awaiting review.
+Status: approved.
 
 ## Goal
 
@@ -200,7 +200,7 @@ One probe before the input thread starts, with a timeout, produces a `Caps` valu
 - A splash of about 1.2 s plays once the probe finishes and before the main view; any key skips it, and Ctrl-Q still quits.
 - Cell-based tachyonfx effects (coalesce, fade, hue sweep), so it costs a few kilobytes per frame over SSH; with kitty graphics a static logo image may join in, never animated through the protocol.
 - Frames are drawn only while the animation runs, then redraws stop (no idle redraws).
-- Falls back to fewer colours by `Caps`; `--no-splash` and `splash = false` in settings turn it off.
+- Falls back to fewer colours by `Caps`; `--no-splash`, `ui.animations = false` in settings and `PAWSMAN_NO_ANIMATION` turn it off.
 - Tested with `TestBackend` snapshots at fixed timestamps plus visual PNG files.
 - Technique and crates come from the splash research ([docs/research/startup-animation.md](../../research/startup-animation.md)).
 

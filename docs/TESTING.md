@@ -8,7 +8,7 @@
 | Properties | proptest; interpolation, TOML round trips, cURL parser | model, import |
 | Tables | rstest named cases | everywhere |
 | Fuzzing | cargo-fuzz; cURL, Postman, Bruno parsers | import |
-| Mutation | `cargo mutants --in-diff` on PRs | CI |
+| Mutation | `cargo mutants --in-diff` before opening a PR | locally |
 | Visual | PNG files from `TestBackend` (`visual-check` skill) | tui |
 | Terminal | PTY tests replaying canned replies for each probe and fallback | tui |
 

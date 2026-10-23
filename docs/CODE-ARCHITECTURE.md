@@ -10,7 +10,7 @@ Crates split along purity and heavy dependencies, never by size. The pure crates
 
 - `deny.toml` `bans.deny` wrappers: tokio only through `pawsman-net`/`pawsman-grpc`/`pawsman-mock`, ratatui and crossterm only through `pawsman-tui`, rhai only through `pawsman-script`, tonic only through `pawsman-grpc`; no openssl, no anyhow.
 - `tools/check-deps.sh` checks the normal dependency tree of each crate against what it must never link.
-- Only the `$EDITOR` launcher in `pawsman-tui` spawns processes (`clippy.toml`).
+- Only the `$EDITOR` launcher and the browser opener (local sessions, OAuth) in `pawsman-tui` spawn processes (`clippy.toml`).
 
 ## 3. Async
 
