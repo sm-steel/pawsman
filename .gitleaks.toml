@@ -1,0 +1,7 @@
+# Test fixtures use the fake-secret marker (TESTING.md); only that marker is allowlisted.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "fake test secrets containing PAWSMAN_FAKE"
+regexes = ['''PAWSMAN_FAKE''']

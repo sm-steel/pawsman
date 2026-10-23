@@ -9,7 +9,7 @@ A pure-Rust terminal API client inspired by [Bruno](https://github.com/usebruno/
 ## What the user chose
 
 | Topic | Choice |
-|---|---|
+| --- | --- |
 | Bruno compatibility | Inspired remake: own on-disk format; Bruno collections are an import source only |
 | Scripting | Declarative captures and assertions, Rhai as the escape hatch |
 | Protocols | HTTP, GraphQL, WebSocket, gRPC, SSE |
@@ -33,7 +33,7 @@ A pure-Rust terminal API client inspired by [Bruno](https://github.com/usebruno/
 Crates are split along purity and heavy dependencies; `tools/check-deps.sh` and `deny.toml` wrappers enforce the boundaries.
 
 | Crate | Role | Key deps |
-|---|---|---|
+| --- | --- | --- |
 | `pawsman-error` | `ErrorInfo` trait, `ErrorCode`, `Retry` | none |
 | `pawsman-model` | Pure domain: collection tree, requests, environments, variable scopes, interpolation, TOML format and migrations, newtype ids | serde, toml |
 | `pawsman-script` | Declarative captures and assertions (JSONPath, regex, header, status); sandboxed Rhai (operation, memory and time limits) | rhai, serde_json_path |
@@ -171,7 +171,7 @@ flowchart LR
 One probe before the input thread starts, with a timeout, produces a `Caps` value. Views branch on `Caps`, never on `$TERM`.
 
 | Capability | Probe | Fallback |
-|---|---|---|
+| --- | --- | --- |
 | Kitty graphics | `ESC _G i=…;a=q` query, DA1 as terminator | sixel (DA1 attribute 4), then half blocks, then a text placeholder `[image 640×480 png]` |
 | Kitty keyboard | `CSI ? u` | Legacy keys; ambiguous bindings get alternatives |
 | OSC 52 clipboard | Write assumed; read only on user request | arboard on local sessions, else a notice that the copy may not have landed |
@@ -201,7 +201,7 @@ One probe before the input thread starts, with a timeout, produces a `Caps` valu
 - Cell-based tachyonfx effects (coalesce, fade, hue sweep), so it costs a few kilobytes per frame over SSH; with kitty graphics a static logo image may join in, never animated through the protocol.
 - Frames are drawn only while the animation runs, then redraws stop (no idle redraws).
 - Falls back to fewer colours by `Caps`; `--no-splash` and `splash = false` in settings turn it off.
-- Tested with `TestBackend` snapshots at fixed timestamps plus visual PNGs.
+- Tested with `TestBackend` snapshots at fixed timestamps plus visual PNG files.
 - Technique and crates come from the splash research ([docs/research/startup-animation.md](../../research/startup-animation.md)).
 
 ### Terminal modes
@@ -244,9 +244,9 @@ Copied from semoxide, renamed: workspace lints, `clippy.toml`, `rustfmt.toml`, `
 Each milestone gets its own spec and plan when it starts, tracked as a GitHub milestone with issues.
 
 | Milestone | Delivers | Exit check |
-|---|---|---|
+| --- | --- | --- |
 | M0 Foundations | Tooling, docs, rules; Bruno inventory; PoCs (separate scratch repo) for kitty images over SSH and tmux, keyboard protocol, OSC 52, Rhai limits | Every PoC demonstrated in kitty over `ssh localhost` and in tmux |
-| M1 HTTP client | Startup animation first (the earliest shippable slice), then model and format, environments and variables, store and watcher, three-pane TUI, request editing and `$EDITOR`, response viewer (JSON, images, hex), timeline, history, cURL import and export, command palette | Edit and send requests against a wiremock fake in the TUI; visual PNGs reviewed |
+| M1 HTTP client | Startup animation first (the earliest shippable slice), then model and format, environments and variables, store and watcher, three-pane TUI, request editing and `$EDITOR`, response viewer (JSON, images, hex), timeline, history, cURL import and export, command palette | Edit and send requests against a wiremock fake in the TUI; visual PNG files reviewed |
 | M2 Tests and runner | Captures, assertions, Rhai sandbox, request chaining, collection runner, `pawsman run` with JUnit and JSON reports | Runner passes a fixture collection in CI |
 | M3 Auth and network | Basic, Bearer, Digest, AWS SigV4, NTLM; OAuth2 (auth code with PKCE over a loopback redirect, client credentials, refresh); cookies; HTTP, SOCKS and PAC proxies; mTLS; layered secrets and vault | OAuth2 auth-code flow completes over SSH with the URL copied through OSC 52 |
 | M4 Protocols | GraphQL (editor, variables, introspection, docs explorer), SSE, WebSocket, gRPC (reflection and `.proto`, unary and all streaming modes) | Each protocol works against a fake in the TUI |

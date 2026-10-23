@@ -9,7 +9,7 @@ Cell-based animation with [tachyonfx](https://github.com/ratatui/tachyonfx), abo
 ## Crates
 
 | Crate | Version | Licence | Use |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | tachyonfx | 0.25.2 | MIT | Effects over a ratatui `Buffer`: `coalesce`, `fade_from_fg`, `hsl_shift_fg`, `sweep_in`, combinators, spatial patterns, easings. `default-features = false, features = ["std"]` drops the DSL parser |
 | tui-big-text | 0.8.10 | MIT OR Apache-2.0 | Optional wordmark; a hand-made `const` logo needs no dependency |
 | ratatui-image | 11.1.0 | MIT | Optional static kitty logo. Uses `t=d` with Unicode placeholders and tmux passthrough. `default-features = false, features = ["crossterm"]`: the default `chafa-dyn` links LGPL libchafa |
@@ -19,7 +19,7 @@ Rejected: cfonts (GPL-3.0), tui-rain (ratatui 0.29 only), ratatui-splash-screen 
 ## Reference projects
 
 | Project | Technique | Worth reusing |
-|---|---|---|
+| --- | --- | --- |
 | [maki](https://github.com/tontinton/maki) `maki-ui/src/splash.rs` | Hand-rolled ease-out fade and sine-wave field | Render is a pure function of `start.elapsed()`; the widget reports a cadence (16 ms while animating, idle after), so the loop goes back to blocking reads |
 | [glim](https://github.com/junkdog/glim) | tachyonfx `parallel`/`sequence` of fades, coalesce and sweeps scoped by `CellFilter` | Skip by processing effects with a one-hour delta: every effect jumps to its final frame |
 | [splashboard](https://github.com/unhappychoice/splashboard) | tachyonfx 0.25, ratatui 0.30, ratatui-image without chafa | Frame as a function of the timestamp, tested through `TestBackend` |
@@ -57,4 +57,4 @@ stateDiagram-v2
 - Skip test: after a key, the effect is done and the next frame equals the final snapshot.
 - Cadence test: once done, the loop has no pending timer.
 - 256-colour test: no `Color::Rgb` remains.
-- Visual PNGs reviewed before merge.
+- Visual PNG files reviewed before merge.

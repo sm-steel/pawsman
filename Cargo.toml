@@ -1,0 +1,66 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.97"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/sm-steel/pawsman"
+publish = false
+
+[workspace.dependencies]
+# Internal crates (CODE-ARCHITECTURE §1); external dependencies are added by the tasks that need them.
+pawsman-error = { path = "crates/pawsman-error" }
+
+[workspace.lints.rust]
+# Every crate root adds `#![forbid(unsafe_code)]`.
+unsafe_code = "deny"
+missing_docs = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
+undocumented_unsafe_blocks = "warn"
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+indexing_slicing = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+# Code smells (nursery lint; limit in clippy.toml, default 25).
+cognitive_complexity = "warn"
+# Hygiene, as in uv/ruff and others (restriction/nursery lints, chosen one by one).
+redundant_clone = "warn"
+use_self = "warn"
+exit = "warn"
+rc_buffer = "warn"
+rc_mutex = "warn"
+rest_pat_in_fully_bound_structs = "warn"
+get_unwrap = "warn"
+empty_drop = "warn"
+empty_structs_with_brackets = "warn"
+or_fun_call = "warn"
+needless_pass_by_ref_mut = "warn"
+needless_collect = "warn"
+str_to_string = "warn"
+# Deterministic output: no iteration over hash maps and sets.
+iter_over_hash_type = "warn"
+# Rust rule 5: a `From` that can fail is a `TryFrom`.
+fallible_impl_from = "warn"
+# Module layout: `foo.rs` + `foo/`, no `mod.rs` (CODE-ARCHITECTURE, modules and files).
+mod_module_files = "warn"
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1

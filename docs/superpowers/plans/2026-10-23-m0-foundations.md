@@ -20,8 +20,8 @@
 - Docs short, technical, Mermaid for diagrams, never ASCII art; one paragraph per line; comments never describe history.
 - Conventional Commits; hooks never skipped (`--no-verify` forbidden); commits use the repo-local identity `smsteel <sm.steel@hotmail.com>`, never a `-c user.email` override.
 - Branch per change, never commit to `main` after the root commit; PRs merge into `main`.
-- Tests first: a `test:` commit failing on assertions, then a stop for the user's approval, then `feat:`/`fix:`.
-- Dependencies beyond those listed in this plan need the user's approval first.
+- Tests first: a `test:` commit failing on assertions, then Claude's own review and approval (recorded in the ledger), then `feat:`/`fix:`. No stops for the user's approval in this project.
+- Dependencies beyond those listed in this plan are reviewed and approved by Claude (licence in the deny.toml allow-list, maintained, justified), recorded in the ledger.
 - PoC code is throwaway: it never moves into `crates/`; its findings do.
 
 ## Review Focus
@@ -37,10 +37,12 @@
 ### Task 1: Workspace, tooling configs and `pawsman-error`
 
 **Files:**
+
 - Create: `Cargo.toml`, `clippy.toml`, `rustfmt.toml`, `rust-toolchain.toml`, `deny.toml`, `mise.toml`, `lefthook.yml`, `.config/nextest.toml`, `.gitleaks.toml`, `.markdownlint.json`, `.gitattributes`, `.gitignore`
 - Create: `crates/pawsman-error/Cargo.toml`, `crates/pawsman-error/src/lib.rs`
 
 **Interfaces:**
+
 - Produces: `pawsman_error::{ErrorCode, Retry, ErrorInfo}`. `ErrorCode::new(&'static str) -> ErrorCode` (const), `ErrorCode::as_str(self) -> &'static str`, `ErrorCode::namespace(self) -> &'static str`, `ErrorCode::slug(self) -> &'static str`, `Display`. `Retry::{Retryable, Permanent}`. `trait ErrorInfo: std::error::Error { fn code(&self) -> ErrorCode; fn help(&self) -> Option<&'static str> { None } fn retry(&self) -> Retry { Retry::Permanent } }`.
 
 - [ ] **Step 1: Branch**
@@ -335,7 +337,7 @@ mod tests {
 Run: `cargo nextest run -p pawsman-error`
 Expected: FAIL in `code_splits_into_namespace_and_slug` and `code_without_separator_is_all_slug` (left `("", "")`); the other two pass.
 
-- [ ] **Step 14: Commit the tests and the tooling, then stop for approval**
+- [ ] **Step 14: Commit the tests and the tooling, then self-approve**
 
 ```bash
 git add -A
@@ -344,7 +346,7 @@ git commit -m "test: ErrorCode namespace and slug split, against a stub
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
-Stop and ask the user to approve the tests before Step 15.
+Review the tests (each fails for the missing behaviour, names a real requirement) and record `Task 1: self-approved tests — <why>` in the ledger before Step 15.
 
 - [ ] **Step 15: Implement**
 
@@ -379,12 +381,14 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ### Task 2: Rules, agent docs, project docs and licences
 
 **Files:**
+
 - Create: `README.md`, `AGENTS.md`, `CLAUDE.md`, `LICENSE-MIT`, `LICENSE-APACHE`
 - Create: `rules/rust-project.md`, `rules/tui.md`, `rules/rust-api-client.md`
 - Create: `docs/ARCHITECTURE.md`, `docs/CODE-ARCHITECTURE.md`, `docs/DECISIONS.md`, `docs/TESTING.md`, `docs/OBSERVABILITY.md`, `docs/RUST-PITFALLS.md`, `docs/errors/README.md`
 - Create: `.claude/skills/rust-testing/SKILL.md`, `.claude/skills/rust-async/SKILL.md`, `.claude/skills/visual-check/SKILL.md`
 
 **Interfaces:**
+
 - Consumes: section numbers used by Task 1's `clippy.toml` reasons: OBSERVABILITY P1 (env snapshot), CODE-ARCHITECTURE P2 (tempfile), CODE-ARCHITECTURE §2 (boundaries), §3 (async), §4 (errors), rules/tui.md §1.
 - Produces: the docs index every later task links to.
 
@@ -402,6 +406,7 @@ Copy `~/src/gitlab/b24-experiment/rules/rust-project.md`. Remove every *(adapt)*
 - [ ] **Step 3: `rules/tui.md`**
 
 Copy `~/src/gitlab/b24-experiment/rules/tui.md` and keep sections 1–7, 9 and 11 with b24 names replaced (`b24-tui` → `pawsman-tui`, `b24_core` → `pawsman_core`, log file `pawsman.log`). Then:
+
 - In §5, replace "Ctrl-C quits like Ctrl-Q" with: "Ctrl-Q quits. Ctrl-C copies the selection and does nothing (with a hint naming Ctrl-Q) when nothing is selected. Ctrl-V pastes through bracketed paste. Raw mode clears IXON so Ctrl-Q arrives as a key."
 - Drop the composer, sign-in, send bar, file bar, portal and chat-specific bullets; §8 keeps only: "Copy goes out as OSC 52 through `Term::copy` (works in kitty and over SSH); arboard runs on its own thread and only in local sessions."
 - In §9, replace the XTVERSION allowlist with the spec's probe table (§3, Capability probe), and add: "Inside tmux, graphics and OSC 52 are wrapped in DCS passthrough."
@@ -434,6 +439,7 @@ Copy `~/src/github/semoxide/AGENTS.md` and replace `semoxide` with `pawsman`; th
 - [ ] **Step 6: `CLAUDE.md`**
 
 Copy `~/src/github/semoxide/CLAUDE.md` and adapt it:
+
 - Header: "pawsman: a pure-Rust terminal API client inspired by Bruno. Phase: M0 foundations."
 - Hard requirements: Rust only (no JavaScript, no wasm); kitty protocols first-class; everything works over SSH and tmux; "Library first, thin CLI" becomes "Engine first, thin TUI and CLI".
 - Add the rules table: `rules/rust-project.md` (wins every conflict), `rules/tui.md`, `rules/rust-api-client.md`.
@@ -467,6 +473,7 @@ Unless you explicitly state otherwise, any contribution intentionally submitted 
 - [ ] **Step 8: Project docs**
 
 Each file is short and links to the spec instead of repeating it:
+
 - `docs/ARCHITECTURE.md`: the spec's crates table and thread diagram, the collection layout, and the variable scope order, each as one section.
 - `docs/CODE-ARCHITECTURE.md`: §1 crate split rule ("along purity and heavy dependencies"), §2 boundaries (the `deny.toml` wrappers and `tools/check-deps.sh`, and that only the `$EDITOR` launcher spawns processes), §3 async (private runtime, no public `async fn`, cancellation), §4 errors (struct over private `Kind`, `ErrorInfo`, codes in `codes.rs` with `codes::ALL`), modules (`foo.rs` + `foo/`, no `mod.rs`); pitfall rows P1 env snapshot, P2 tempfile only.
 - `docs/OBSERVABILITY.md`: P1 env snapshot; tracing only in libraries; the file log under `~/.local/state/pawsman/`; `PAWSMAN_LOG` then `RUST_LOG`; `url_for_log()`.
@@ -484,7 +491,7 @@ cp -r ~/src/gitlab/b24-experiment/.claude/skills/visual-check .claude/skills/
 grep -rl -e semoxide -e b24 .claude/skills
 ```
 
-Edit every file the grep lists: crate and binary names to pawsman's; the visual command to `cargo test -p pawsman-tui visual -- --ignored` with PNGs in `target/visual/tui-*.png`.
+Edit every file the grep lists: crate and binary names to pawsman's; the visual command to `cargo test -p pawsman-tui visual -- --ignored` with PNG files in `target/visual/tui-*.png`.
 
 - [ ] **Step 10: Verify docs**
 
@@ -505,9 +512,11 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ### Task 3: Boundary check, CI and the first push
 
 **Files:**
+
 - Create: `tools/check-deps.sh`, `.github/workflows/ci.yml`, `.github/workflows/deny-daily.yml`, `renovate.json`
 
 **Interfaces:**
+
 - Consumes: the workspace from Task 1.
 - Produces: the `required-checks` job that branch protection requires.
 
@@ -550,6 +559,7 @@ Expected: `crate boundaries ok`.
 - [ ] **Step 2: `.github/workflows/ci.yml`**
 
 Copy `~/src/github/semoxide/.github/workflows/ci.yml` and change it:
+
 - Delete the semgrep steps and the Windows matrix entry; the test matrix is `ubuntu-latest` and `macos-latest`.
 - Replace the `cargo insta test …` step with `cargo nextest run --workspace --profile ci --no-tests=pass` until insta arrives in M1.
 - Add `tools/check-deps.sh` to the `quality` job after clippy.
@@ -609,6 +619,7 @@ Expected: JSON echoing the protection. A private repo on a free plan returns 403
 **Files:** none (GitHub only).
 
 **Interfaces:**
+
 - Produces: milestone numbers and issue numbers that later PRs close.
 
 - [ ] **Step 1: Labels**
@@ -662,6 +673,7 @@ Expected: M0 with 9 open issues, M1–M7 with 1 each.
 ### Task 5: PoC repository
 
 **Files:**
+
 - Create: `~/src/github/pawsman-poc/` (separate local git repo, not pushed unless the user asks), `Cargo.toml`, `rust-toolchain.toml`, `README.md`
 
 - [ ] **Step 1: Create**
@@ -712,10 +724,12 @@ git add -A && git commit -m "chore: poc workspace"
 ### Task 6: PoC 1, capability probe and kitty images over SSH and tmux
 
 **Files:**
+
 - Create: `~/src/github/pawsman-poc/probe/Cargo.toml`, `probe/src/main.rs`, `probe/src/parse.rs`, `probe/assets/logo.png`
 - Create (pawsman): `docs/research/kitty-graphics-over-ssh.md`
 
 **Interfaces:**
+
 - Produces (for M1, as a design input only): `parse::Caps { kitty_graphics: bool, sixel: bool, kitty_keyboard: bool, cell_px: Option<(u16, u16)> }` and `parse::parse(replies: &[u8]) -> Caps`.
 
 - [ ] **Step 1: Write the parser tests**
@@ -787,7 +801,7 @@ After the probe, build `ratatui_image::picker::Picker::from_query_stdio()` befor
 - [ ] **Step 5: Run the matrix**
 
 | # | Where | Command |
-|---|---|---|
+| --- | --- | --- |
 | 1 | kitty local | `cargo run -p probe` |
 | 2 | kitty over SSH | `ssh -t localhost ~/src/github/pawsman-poc/target/debug/probe` |
 | 3 | kitty, tmux, passthrough on | `tmux new 'tmux set -g allow-passthrough on; ~/…/probe'` |
@@ -810,6 +824,7 @@ Write `pawsman/docs/research/kitty-graphics-over-ssh.md`: the matrix with result
 ### Task 7: PoC 2, kitty keyboard protocol, Ctrl-Q and OSC 52
 
 **Files:**
+
 - Create: `~/src/github/pawsman-poc/keys/Cargo.toml`, `keys/src/main.rs`, `keys/src/term.rs`
 - Create (pawsman): `docs/research/keyboard-and-clipboard.md`
 
@@ -844,10 +859,12 @@ Write `pawsman/docs/research/keyboard-and-clipboard.md`: the matrix, the key bin
 ### Task 8: PoC 3, Rhai sandbox limits
 
 **Files:**
+
 - Create: `~/src/github/pawsman-poc/rhai-limits/Cargo.toml`, `rhai-limits/src/lib.rs`
 - Create (pawsman): `docs/research/rhai-sandbox.md`
 
 **Interfaces:**
+
 - Produces (design input): `sandbox(budget: Duration) -> rhai::Engine`.
 
 - [ ] **Step 1: Write the limit tests**
@@ -953,10 +970,12 @@ Write `pawsman/docs/research/rhai-sandbox.md`: the limits and why, per-run clock
 ### Task 9: PoC 4, tachyonfx splash
 
 **Files:**
+
 - Create: `~/src/github/pawsman-poc/splash/Cargo.toml`, `splash/src/main.rs`, `splash/src/splash.rs`
 - Create (pawsman): append findings to `docs/research/startup-animation.md`
 
 **Interfaces:**
+
 - Produces (design input for M1's splash): `splash::Splash::new(seed: u64) -> Splash`, `Splash::frame(&mut self, elapsed: Duration, buf: &mut Buffer, area: Rect)`, `Splash::skip(&mut self)`, `Splash::done(&self) -> bool`, `splash::fits(area: Rect) -> bool`.
 
 - [ ] **Step 1: Write the tests**
@@ -1024,6 +1043,7 @@ mod tests {
 - [ ] **Step 2: Run to fail, then implement**
 
 Run `cargo test -p splash` against stubs (`done` false, `fits` true) → fail. Implement:
+
 - `Splash::new(seed)`: the research doc's effect, `parallel(&[coalesce((500, QuadOut)).with_rng(SimpleRng::new(seed)).with_filter(CellFilter::Text), sequence(&[sleep(150), fade_from_fg(BG, (600, CubicOut))]), delay(500, hsl_shift_fg([40.0, 0.0, 10.0], (500, SineInOut)))])`.
 - `frame`: clear `buf`, paint `LOGO` centred, then `effect.process(elapsed - last, buf, area)` (keep `last`), and in indexed mode map each `Color::Rgb` cell to the nearest xterm-256 index.
 - `skip`: `effect.process(Duration::from_secs(3600), …)` on a scratch buffer, marking done.
@@ -1036,11 +1056,11 @@ Run → 5 pass.
 
 - [ ] **Step 4: Visual check**
 
-Render frames at 0, 300, 600, 900, 1200 ms to PNGs with the visual-check method (TestBackend buffer to PNG, one pixel block per cell). Show them to the user and get approval of the look before M1 builds the real splash.
+Render frames at 0, 300, 600, 900, 1200 ms to PNG files with the visual-check method (TestBackend buffer to PNG, one pixel block per cell). Review the PNG files (Read them), judge the look, iterate the effect parameters until it reads as polished, and record the approved parameters in the ledger.
 
 - [ ] **Step 5: Findings**
 
-Append to `pawsman/docs/research/startup-animation.md`: measured bytes per frame locally and over SSH, frame rate, the final effect parameters the user approved. Commit `docs: splash prototype findings`. Close the issue.
+Append to `pawsman/docs/research/startup-animation.md`: measured bytes per frame locally and over SSH, frame rate, the final effect parameters. Commit `docs: splash prototype findings`. Close the issue.
 
 ---
 
