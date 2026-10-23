@@ -75,7 +75,8 @@ Rules for M1 that came out of it:
 
 - **Advance in ticks, apply once.** `sequence` and `delay` move one stage per `process` call, so a long delta stalls them; and each call blends with what is already in the buffer, so ticks applied to the same buffer compound (a fade restarts from its own output, a lightness shift runs to white). Step every tick but the last on a scratch copy of the freshly painted buffer, then apply the last tick to the real one.
 - **Confine effects to the logo's rectangle**: effects over the whole area recolour blank cells and multiply the bytes per frame.
-- **A resize redraws, never skips**: a tiling window manager resizes a new window right after start.
+- **A resize redraws, never skips**: a tiling window manager resizes a new window right after start. **Below the logo size the splash ends** (and `frame` draws nothing): painting the tagline outside a too-small buffer panics in ratatui.
+- The tagline is centred by grapheme width, not byte length.
 - **No sleep before the fade**: the logo must start at the background colour, or it flashes.
 - **The hue sweep returns to the base colours** (`ping_pong`), so the last animated frame equals the static logo.
-- Over SSH, halve the frame rate (about 30 fps) to halve the bytes; the effect is time-based, so it keeps its length.
+- Over SSH, consider about 30 fps to halve the bytes (unmeasured over a real link; the effect is time-based, so it keeps its length).

@@ -16,11 +16,16 @@ What the M0 keys PoC (`pawsman-poc/keys`, crossterm 0.29.0) showed in kitty 0.49
 | Paste | one `Paste(text)` event (bracketed paste) | same |
 
 - With `REPORT_EVENT_TYPES`, every key arrives twice (Press, Release); handlers act on Press and Repeat only.
+- **Flags: `DISAMBIGUATE_ESCAPE_CODES` only.** With `REPORT_ALL_KEYS_AS_ESCAPE_CODES`, crossterm 0.29 reports Shift+1 as `Char('1')` + SHIFT instead of `!` unless the alternate-key field is present, so text fields would type the wrong characters. Under `DISAMBIGUATE` alone, kitty sends text-producing keys (shifted included) as text, and Ctrl/Alt chords stay distinguishable. The PoC's synthetic keys (`kitty @ send-key shift+a`) still arrive as `Char('a')` + SHIFT under either flag set; real typing is checked in #42.
+- Layout folding (a Cyrillic key acting as the US key in the same place) cannot use kitty's base-layout field, which crossterm drops; pawsman keeps its own folding table. `ж` arrives as `Char('ж')`.
+- crossterm's `supports_keyboard_enhancement()` writes its own query; M1 takes the keyboard capability from pawsman's probe instead.
 - Bindings that need the protocol get legacy alternatives: Alt-Enter for Ctrl-Enter (send), never Ctrl-I.
 
 ## Mode stack
 
-`raw → alternate screen → kitty keyboard flags → bracketed paste → focus events → mouse`, undone newest first from `restore()`, `Drop` and the panic hook.
+`raw → alternate screen → kitty keyboard flags → bracketed paste → focus events → mouse`, undone newest first (mouse, focus, paste, keyboard, alternate screen, raw) from `restore()`, `Drop` and the panic hook.
+
+For M1: the panic hook must not block on the mode lock (`try_lock`), and a panic on a worker thread must not restore the terminal under a running main loop; it ends the app instead.
 
 | Exit | Shell afterwards |
 | --- | --- |

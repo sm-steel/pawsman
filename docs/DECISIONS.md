@@ -13,7 +13,7 @@ One line per non-obvious decision.
 - **Cell-based tachyonfx splash** — kitty frame animation costs too much over SSH (→ [startup animation](research/startup-animation.md)).
 - **typos learns `ratatui`** — its dictionary corrects the crate name to "ratatouille" on every mention (`_typos.toml`).
 - **The agent self-approves** — tests, snapshots, visuals and dependencies are reviewed and approved by the agent, with reasons recorded (→ [rules §1](../rules/rust-project.md#1-working-agreement)).
-- **Own kitty encoder, not ratatui-image's** — ratatui-image 11.1.0 sends uncompressed RGBA and its own probe; pawsman sends PNG or zlib RGBA through its single probe (→ [kitty graphics](research/kitty-graphics-over-ssh.md#decision-for-m1)).
+- **Own kitty encoder, not ratatui-image's** — ratatui-image 11.1.0 sends uncompressed RGBA by default, has no PNG path, and enables its opt-in zlib only through its own probe; pawsman sends PNG or zlib RGBA, whichever is smaller, through its single probe (→ [kitty graphics](research/kitty-graphics-over-ssh.md#decision-for-m1)).
 - **Probe timeout 1 s plus 150 ms grace** — a silent terminal costs 1.15 s once and leaks no reply bytes (→ [kitty graphics](research/kitty-graphics-over-ssh.md#probe)).
 - **Button-event mouse tracking only** — crossterm's `EnableMouseCapture` reports every motion, which would wake the loop (→ [keyboard and clipboard](research/keyboard-and-clipboard.md#mouse)).
 - **Alt-Enter as the legacy send key** — Ctrl-Enter is plain Enter without the kitty keyboard protocol (→ [keyboard and clipboard](research/keyboard-and-clipboard.md#keys)).
