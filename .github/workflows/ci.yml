@@ -1,0 +1,156 @@
+# Quality gates and tests (docs/TESTING.md § CI, docs/CODE-ARCHITECTURE.md#quality-tooling).
+# Branch protection requires only `required-checks`, which aggregates every job here.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_WARNINGS: deny
+
+jobs:
+  # Rust jobs run only when crates exist and something other than Markdown changed.
+  # The workflow itself always runs, so the required `required-checks` always reports.
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.rust.outputs.run }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: rust
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          run=false
+          if ls crates/*/Cargo.toml >/dev/null 2>&1; then
+            run=true
+            if [ "$EVENT" = "pull_request" ]; then
+              # A failing diff fails the job (set -e) instead of silently skipping the tests.
+              changed=$(git diff --name-only "origin/$BASE_REF...HEAD")
+              if ! printf '%s\n' "$changed" | grep -qv '\.md$'; then
+                run=false
+              fi
+            fi
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # gitleaks scans the full history.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+        with:
+          # renovate: datasource=github-releases depName=jdx/mise
+          version: 2026.10.3
+          install_args: "aqua:crate-ci/typos aqua:gitleaks/gitleaks aqua:rhysd/actionlint aqua:zizmorcore/zizmor node npm:markdownlint-cli2"
+      - name: gitleaks
+        run: gitleaks git --redact
+      - name: actionlint
+        run: actionlint
+      - name: zizmor
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: zizmor .github/workflows
+      - name: markdownlint
+        run: markdownlint-cli2 "**/*.md" "#target" "#node_modules"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: rustfmt (pinned toolchain)
+        run: cargo fmt --all --check
+      - name: clippy (pinned toolchain)
+        run: cargo clippy --workspace --all-targets --locked
+      - name: crate boundaries
+        run: tools/check-deps.sh
+      - name: typos
+        run: typos
+
+  deny:
+    needs: detect
+    if: needs.detect.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+        with:
+          # renovate: datasource=github-releases depName=jdx/mise
+          version: 2026.10.3
+          install_args: aqua:EmbarkStudios/cargo-deny
+      - run: cargo deny --locked check
+
+  test:
+    needs: detect
+    if: needs.detect.outputs.rust == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      NEXTEST_PROFILE: ci
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+        with:
+          # renovate: datasource=github-releases depName=jdx/mise
+          version: 2026.10.3
+          install_args: github:nextest-rs/nextest
+      - name: Tests
+        run: cargo nextest run --workspace --locked --no-tests=pass
+      - run: cargo test --doc --workspace --locked
+
+  msrv:
+    needs: detect
+    if: needs.detect.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+        with:
+          # renovate: datasource=github-releases depName=jdx/mise
+          version: 2026.10.3
+          install_args: github:taiki-e/cargo-hack
+      - name: MSRV
+        run: cargo hack check --rust-version --workspace --locked
+      - name: Each feature
+        run: cargo hack check --each-feature --workspace --locked
+
+  required-checks:
+    if: always()
+    needs: [quality, deny, test, msrv]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every job succeeded or was skipped
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          for result in $RESULTS; do
+            case "$result" in
+              success | skipped) ;;
+              *) echo "A required job ended with: $result"; exit 1 ;;
+            esac
+          done

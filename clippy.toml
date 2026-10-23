@@ -1,0 +1,33 @@
+# One file for the whole workspace: clippy reads only the nearest clippy.toml, so per-crate files would
+# replace this one instead of extending it. Allowed sites use `#[expect(clippy::disallowed_methods, reason = "…")]`.
+
+# Rust rule 1 applies outside tests only.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
+allow-print-in-tests = true
+
+# Rust rule 3: no `bool` parameters.
+max-fn-params-bools = 0
+
+# Code smells: function complexity (`cognitive_complexity`, workspace lint) and nesting depth
+# (Rust rule 8, flat control flow); function length stays at `too_many_lines`' default of 100.
+cognitive-complexity-threshold = 25
+excessive-nesting-threshold = 5
+
+# `allow-invalid`: the crate isn't a dependency yet; the ban applies once it is.
+disallowed-methods = [
+  { path = "std::env::var", reason = "only the env snapshot reads the process env (OBSERVABILITY P1)" },
+  { path = "std::env::var_os", reason = "only the env snapshot reads the process env (OBSERVABILITY P1)" },
+  { path = "std::env::vars", reason = "only the env snapshot reads the process env (OBSERVABILITY P1)" },
+  { path = "std::env::vars_os", reason = "only the env snapshot reads the process env (OBSERVABILITY P1)" },
+  { path = "std::env::temp_dir", reason = "use tempfile, never a shared temp dir (CODE-ARCHITECTURE P2)" },
+  { path = "std::process::Command::new", reason = "only the $EDITOR launcher spawns processes (CODE-ARCHITECTURE §2)" },
+  { path = "tokio::process::Command::new", reason = "only the $EDITOR launcher spawns processes (CODE-ARCHITECTURE §2)", allow-invalid = true },
+  { path = "std::io::stdout", reason = "the terminal belongs to term::Term (rules/tui.md §1)" },
+  { path = "std::io::stderr", reason = "the terminal belongs to term::Term (rules/tui.md §1)" },
+  { path = "reqwest::ClientBuilder::danger_accept_invalid_certs", reason = "TLS checks stay on unless the user disables them per collection (rules/rust-api-client.md)", allow-invalid = true },
+  { path = "reqwest::ClientBuilder::danger_accept_invalid_hostnames", reason = "TLS checks stay on unless the user disables them per collection (rules/rust-api-client.md)", allow-invalid = true },
+  { path = "rustls::ClientConfig::dangerous", reason = "never bypass TLS verification (rules/rust-api-client.md)", allow-invalid = true },
+]

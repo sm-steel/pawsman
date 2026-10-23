@@ -1,0 +1,4 @@
+{
+  "$comment": "MD013 off: docs keep one paragraph per line (soft-wrapped by GitHub and editors) and table rows can't be wrapped; length is governed by the 'short docs' rule in CLAUDE.md.",
+  "MD013": false
+}

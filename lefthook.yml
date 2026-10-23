@@ -1,0 +1,37 @@
+# Local git hooks (CI is the gate). Setup per clone: `lefthook install`.
+# renovate: datasource=github-releases depName=evilmartians/lefthook
+min_version: 2.1.17
+
+pre-commit:
+  commands:
+    rustfmt:
+      glob: "*.rs"
+      run: rustfmt {staged_files}
+      stage_fixed: true
+    markdownlint:
+      glob: "*.md"
+      run: markdownlint-cli2 --fix {staged_files}
+      stage_fixed: true
+    typos:
+      run: typos --force-exclude {staged_files}
+    gitleaks:
+      run: gitleaks git --pre-commit --redact --staged
+    actionlint:
+      glob: ".github/workflows/*.{yml,yaml}"
+      run: actionlint {staged_files}
+    zizmor:
+      glob: ".github/workflows/*.{yml,yaml}"
+      run: zizmor --offline {staged_files}
+
+pre-push:
+  piped: true
+  commands:
+    clippy:
+      run: cargo clippy --workspace --all-targets --locked
+      env:
+        CARGO_BUILD_WARNINGS: deny
+    nextest:
+      # an empty workspace has nothing for nextest to load
+      skip:
+        - run: test ! -d crates
+      run: cargo nextest run --workspace --no-tests=pass

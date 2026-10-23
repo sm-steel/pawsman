@@ -1,0 +1,11 @@
+[package]
+name = "pawsman-error"
+description = "Error codes and the ErrorInfo trait shared by every pawsman crate"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,13 @@
+[profile.default]
+# Flag tests slower than 10s; kill a hung test after a minute.
+slow-timeout = { period = "10s", terminate-after = 6 }
+
+# Selected in CI with `NEXTEST_PROFILE=ci`.
+[profile.ci]
+fail-fast = false
+# Show a failure as it happens and again at the end of the log.
+failure-output = "immediate-final"
+final-status-level = "slow"
+
+[profile.ci.junit]
+path = "junit.xml"

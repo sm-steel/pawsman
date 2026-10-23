@@ -1,0 +1,26 @@
+# Newly published advisories reach us within a day, not only on the next PR.
+name: deny-daily
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - if: hashFiles('crates/*/Cargo.toml') != ''
+        uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+        with:
+          # renovate: datasource=github-releases depName=jdx/mise
+          version: 2026.10.3
+          install_args: aqua:EmbarkStudios/cargo-deny
+      - if: hashFiles('crates/*/Cargo.toml') != ''
+        run: cargo deny --locked check advisories

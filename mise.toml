@@ -1,0 +1,15 @@
+# Dev tools pinned per project; `mise install` sets them up locally, CI installs from this file too.
+# Renovate bumps these versions. Rust itself is pinned in rust-toolchain.toml.
+[tools]
+"aqua:crate-ci/typos" = "1.51.1"
+"aqua:evilmartians/lefthook" = "2.1.17"
+"github:nextest-rs/nextest" = { version = "0.9.146", version_prefix = "cargo-nextest-" }
+"aqua:EmbarkStudios/cargo-deny" = "0.20.2"
+"github:sourcefrog/cargo-mutants" = "27.1.0"
+"github:taiki-e/cargo-hack" = "0.6.45"
+"aqua:gitleaks/gitleaks" = "8.30.1"
+"aqua:rhysd/actionlint" = "1.7.12"
+"aqua:zizmorcore/zizmor" = "1.30.1"
+# Node LTS runs markdownlint-cli2.
+node = "24.21.0"
+"npm:markdownlint-cli2" = "0.23.3"

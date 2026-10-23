@@ -1,0 +1,49 @@
+# cargo-deny policy (docs/CODE-ARCHITECTURE.md §2, quality tooling). Reference: https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+all-features = true
+
+[advisories]
+# Every vulnerability advisory is an error. Unmaintained: only crates we depend on directly.
+unmaintained = "workspace"
+unsound = "all"
+yanked = "deny"
+ignore = []
+
+[licenses]
+# Permissive licenses compatible with shipping pawsman as MIT OR Apache-2.0. Anything else is denied.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-3.0",
+  "Zlib",
+  "CC0-1.0",
+]
+confidence-threshold = 0.8
+
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+deny = [
+  # Crate boundaries (CODE-ARCHITECTURE §2): heavy dependencies only through their owning crate.
+  { crate = "tokio", wrappers = ["pawsman-net", "pawsman-grpc", "pawsman-mock", "reqwest", "hyper", "hyper-util", "h2", "tower", "tonic", "tokio-util", "tokio-stream", "tokio-rustls", "tokio-tungstenite", "axum"], reason = "async only on the net runtime thread (CODE-ARCHITECTURE §3)" },
+  { crate = "ratatui", wrappers = ["pawsman-tui", "tachyonfx", "ratatui-image", "tui-big-text"], reason = "drawing only in pawsman-tui" },
+  { crate = "crossterm", wrappers = ["pawsman-tui", "ratatui", "ratatui-crossterm"], reason = "terminal access only in pawsman-tui" },
+  { crate = "rhai", wrappers = ["pawsman-script"], reason = "scripting only through pawsman-script" },
+  { crate = "tonic", wrappers = ["pawsman-grpc"], reason = "gRPC only in pawsman-grpc" },
+  { crate = "openssl-sys", reason = "rustls only" },
+  { crate = "anyhow", reason = "typed errors per crate (CODE-ARCHITECTURE §4)" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
