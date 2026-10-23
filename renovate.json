@@ -1,0 +1,54 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Shared Renovate preset for semoxide repositories: every pin is bumped by automation (CODE-ARCHITECTURE \u00a77).",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "schedule": [
+    "before 6am on monday"
+  ],
+  "semanticCommits": "enabled",
+  "semanticCommitType": "chore",
+  "semanticCommitScope": "deps",
+  "labels": [
+    "area:ci"
+  ],
+  "rangeStrategy": "pin",
+  "packageRules": [
+    {
+      "matchManagers": [
+        "github-actions"
+      ],
+      "groupName": "GitHub Actions"
+    },
+    {
+      "matchManagers": [
+        "rust-toolchain"
+      ],
+      "groupName": "Rust toolchain"
+    },
+    {
+      "matchDepNames": [
+        "semgrep"
+      ],
+      "groupName": "semgrep"
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Versions annotated with `# renovate: datasource=\u2026 depName=\u2026` (or `//` in JSONC) on the line above.",
+      "managerFilePatterns": [
+        "/(^|/)lefthook\\.yml$/",
+        "/(^|/)\\.zed/settings\\.json$/",
+        "/(^|/)\\.github/workflows/.+\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "(?:#|//) renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s*\\n[^\\n]*?(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "extractVersionTemplate": "^v?(?<version>.+)$"
+    }
+  ],
+  "mode": "full"
+}
