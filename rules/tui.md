@@ -8,7 +8,7 @@ Rules for `crates/pawsman-tui`. [rust-project.md](rust-project.md) wins every co
    - The single exception is the one exit line printed in `main` after the terminal has been restored.
    - Logs go to the log file only.
 2. **Every mode is undone.**
-   - Each mode the app turns on is listed in `term::MODES` and undone in `Term::restore`, newest first: kitty keyboard flags, mouse capture, bracketed paste, focus events, alternate screen, raw mode.
+   - Each mode the app turns on is listed in `term::MODES` and undone in `Term::restore`, newest first: kitty keyboard flags, mouse tracking (button events only: `CSI ? 1000 h`, `1002`, `1006`; never any-motion `1003`), bracketed paste, focus events, alternate screen, raw mode.
    - `restore` runs on a normal exit, on an error, from `Drop`, and from the panic hook.
    - If a setup step fails, the steps already done are undone, newest first, before the error returns. A failing optional mode is logged and skipped.
    - `$EDITOR` (Ctrl-E) suspends: every mode is undone before the editor starts and set up again after it exits.

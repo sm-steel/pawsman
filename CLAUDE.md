@@ -68,5 +68,8 @@ All pinned in `mise.toml`; Rust in `rust-toolchain.toml`.
 - [Rust pitfalls](docs/RUST-PITFALLS.md): known Rust problems and mitigations
 - [Error pages](docs/errors/README.md): message wording and page template
 - [Bruno feature inventory](docs/re/bruno-feature-inventory.md): Bruno's backend features from rea, mapped to milestones
-- [Startup animation](docs/research/startup-animation.md): splash technique and crates
+- [Startup animation](docs/research/startup-animation.md): splash technique, crates and prototype findings
+- [Kitty graphics over SSH](docs/research/kitty-graphics-over-ssh.md): probe, image transmission, open matrix rows
+- [Keyboard and clipboard](docs/research/keyboard-and-clipboard.md): key encodings, mode stack, mouse, OSC 52
+- [Rhai sandbox](docs/research/rhai-sandbox.md): limits, cost, M2 script API
 - PoCs: `~/src/github/pawsman-poc` (never in this repo)
