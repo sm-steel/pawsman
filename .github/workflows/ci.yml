@@ -141,7 +141,7 @@ jobs:
 
   required-checks:
     if: always()
-    needs: [quality, deny, test, msrv]
+    needs: [detect, quality, deny, test, msrv]
     runs-on: ubuntu-latest
     steps:
       - name: Every job succeeded or was skipped
