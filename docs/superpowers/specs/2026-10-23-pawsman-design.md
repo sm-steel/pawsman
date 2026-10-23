@@ -20,6 +20,7 @@ A pure-Rust terminal API client inspired by [Bruno](https://github.com/usebruno/
 | Secrets | Layered: env and `.env`, then OS keyring, then an age-encrypted vault |
 | Architecture | Sync main loop, engine thread, private tokio runtime thread (b24 model) |
 | Quit key | Ctrl-Q; Ctrl-C and Ctrl-V are copy and paste |
+| Startup | A short, skippable startup animation, shipped as early as possible |
 
 ## Constraints that shaped the design
 
@@ -194,6 +195,15 @@ One probe before the input thread starts, with a timeout, produces a `Caps` valu
 - Ctrl-K opens the command palette: fuzzy search over requests and actions.
 - Mouse: click to focus, scroll, drag pane borders.
 
+### Startup animation
+
+- A splash of about 1.2 s plays once the probe finishes and before the main view; any key skips it, and Ctrl-Q still quits.
+- Cell-based tachyonfx effects (coalesce, fade, hue sweep), so it costs a few kilobytes per frame over SSH; with kitty graphics a static logo image may join in, never animated through the protocol.
+- Frames are drawn only while the animation runs, then redraws stop (no idle redraws).
+- Falls back to fewer colours by `Caps`; `--no-splash` and `splash = false` in settings turn it off.
+- Tested with `TestBackend` snapshots at fixed timestamps plus visual PNGs.
+- Technique and crates come from the splash research ([docs/research/startup-animation.md](../../research/startup-animation.md)).
+
 ### Terminal modes
 
 Every mode the app enables (alternate screen, raw mode, kitty keyboard flags, mouse, bracketed paste, focus events) is listed in `term::MODES` and undone newest-first on exit, on error, in `Drop` and in the panic hook.
@@ -236,7 +246,7 @@ Each milestone gets its own spec and plan when it starts, tracked as a GitHub mi
 | Milestone | Delivers | Exit check |
 |---|---|---|
 | M0 Foundations | Tooling, docs, rules; Bruno inventory; PoCs (separate scratch repo) for kitty images over SSH and tmux, keyboard protocol, OSC 52, Rhai limits | Every PoC demonstrated in kitty over `ssh localhost` and in tmux |
-| M1 HTTP client | Model and format, environments and variables, store and watcher, three-pane TUI, request editing and `$EDITOR`, response viewer (JSON, images, hex), timeline, history, cURL import and export, command palette | Edit and send requests against a wiremock fake in the TUI; visual PNGs reviewed |
+| M1 HTTP client | Startup animation first (the earliest shippable slice), then model and format, environments and variables, store and watcher, three-pane TUI, request editing and `$EDITOR`, response viewer (JSON, images, hex), timeline, history, cURL import and export, command palette | Edit and send requests against a wiremock fake in the TUI; visual PNGs reviewed |
 | M2 Tests and runner | Captures, assertions, Rhai sandbox, request chaining, collection runner, `pawsman run` with JUnit and JSON reports | Runner passes a fixture collection in CI |
 | M3 Auth and network | Basic, Bearer, Digest, AWS SigV4, NTLM; OAuth2 (auth code with PKCE over a loopback redirect, client credentials, refresh); cookies; HTTP, SOCKS and PAC proxies; mTLS; layered secrets and vault | OAuth2 auth-code flow completes over SSH with the URL copied through OSC 52 |
 | M4 Protocols | GraphQL (editor, variables, introspection, docs explorer), SSE, WebSocket, gRPC (reflection and `.proto`, unary and all streaming modes) | Each protocol works against a fake in the TUI |
