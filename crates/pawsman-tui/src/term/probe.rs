@@ -11,8 +11,11 @@ use super::caps::CellPx;
 use super::tmux::{InTmux, passthrough};
 
 const GRAPHICS_QUERY: &[u8] = b"\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\";
-/// Keyboard flags, cell size in pixels, and an SGR truecolour background read back by DECRQSS.
-const PLAIN_QUERY: &[u8] = b"\x1b[?u\x1b[16t\x1b[48:2:1:2:3m\x1bP$qm\x1b\\\x1b[m";
+/// Keyboard flags and cell size in pixels.
+const PLAIN_QUERY: &[u8] = b"\x1b[?u\x1b[16t";
+/// An SGR truecolour background read back by DECRQSS. Never sent inside tmux: tmux does not answer
+/// it and drops the passthrough sequences that follow.
+const TRUECOLOR_QUERY: &[u8] = b"\x1b[48:2:1:2:3m\x1bP$qm\x1b\\\x1b[m";
 const DA1: &[u8] = b"\x1b[c";
 
 /// What to write and how many DA1 replies end the probe.
@@ -42,7 +45,7 @@ impl Query {
 pub fn query(tmux: InTmux) -> Query {
     match tmux {
         InTmux::No => Query {
-            bytes: [GRAPHICS_QUERY, PLAIN_QUERY, DA1].concat(),
+            bytes: [GRAPHICS_QUERY, PLAIN_QUERY, TRUECOLOR_QUERY, DA1].concat(),
             da1_needed: 1,
         },
         InTmux::Yes => Query {
