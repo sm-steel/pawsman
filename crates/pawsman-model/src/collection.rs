@@ -2,7 +2,18 @@
 
 use std::path::{Path, PathBuf};
 
+use serde::Deserialize;
+
 use crate::{ModelError, Request, RequestId};
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Manifest {
+    format: u32,
+    name: String,
+}
+
+const MANIFEST: &str = "pawsman.toml";
 
 /// A collection and its entries.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,8 +52,37 @@ impl Collection {
         manifest: Option<&str>,
         files: Vec<(PathBuf, String)>,
     ) -> Result<Self, ModelError> {
-        let _ = (manifest, files);
-        Err(ModelError::not_a_collection(root))
+        let manifest = manifest.ok_or_else(|| ModelError::not_a_collection(root))?;
+        let manifest_path = root.join(MANIFEST);
+        let manifest: Manifest = toml::from_str(manifest)
+            .map_err(|e| ModelError::invalid_file(&manifest_path, e.message()))?;
+        if manifest.format != 1 {
+            return Err(ModelError::invalid_file(
+                &manifest_path,
+                &format!("format `{}` is not supported", manifest.format),
+            ));
+        }
+        let mut files = files;
+        files.sort_by(|a, b| a.0.file_name().cmp(&b.0.file_name()));
+        let entries = (1..)
+            .zip(files)
+            .map(|(n, (path, text))| {
+                let kind = match Request::parse(&text, &path) {
+                    Ok(request) => EntryKind::Request(request),
+                    Err(err) => EntryKind::Invalid(err),
+                };
+                Entry {
+                    id: RequestId::new(n),
+                    path,
+                    kind,
+                }
+            })
+            .collect();
+        Ok(Self {
+            root: root.to_owned(),
+            name: manifest.name,
+            entries,
+        })
     }
 
     /// The collection directory.
@@ -66,8 +106,13 @@ impl Collection {
     /// The request with `id`, if it parsed.
     #[must_use]
     pub fn request(&self, id: RequestId) -> Option<&Request> {
-        let _ = id;
-        None
+        self.entries
+            .iter()
+            .find(|e| e.id == id)
+            .and_then(|e| match &e.kind {
+                EntryKind::Request(request) => Some(request),
+                EntryKind::Invalid(_) => None,
+            })
     }
 }
 

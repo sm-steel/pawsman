@@ -3,7 +3,26 @@
 use std::fmt;
 use std::path::Path;
 
+use serde::Deserialize;
+
 use crate::ModelError;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RequestFile {
+    name: String,
+    kind: Option<String>,
+    method: Option<String>,
+    url: String,
+    headers: Option<toml::Table>,
+    body: Option<BodyFile>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BodyFile {
+    text: String,
+}
 
 /// A request's id within its collection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -41,8 +60,35 @@ impl Request {
     /// `model::invalid_file` for bad TOML, unknown keys, a kind other than `http`, or a header
     /// value that is not a string.
     pub fn parse(text: &str, path: &Path) -> Result<Self, ModelError> {
-        let _ = text;
-        Err(ModelError::invalid_file(path, "todo"))
+        let file: RequestFile =
+            toml::from_str(text).map_err(|e| ModelError::invalid_file(path, e.message()))?;
+        if let Some(kind) = file.kind.as_deref()
+            && kind != "http"
+        {
+            return Err(ModelError::invalid_file(
+                path,
+                &format!("kind `{kind}` is not supported yet; only `http`"),
+            ));
+        }
+        let mut headers = Vec::new();
+        for (name, value) in file.headers.unwrap_or_default() {
+            let toml::Value::String(value) = value else {
+                return Err(ModelError::invalid_file(
+                    path,
+                    &format!("header `{name}` must be a string"),
+                ));
+            };
+            headers.push((name, value));
+        }
+        Ok(Self {
+            name: file.name,
+            method: file
+                .method
+                .map_or_else(|| "GET".to_owned(), |m| m.to_ascii_uppercase()),
+            url: file.url,
+            headers,
+            body: file.body.map(|b| b.text),
+        })
     }
 
     /// The display name.
@@ -78,7 +124,10 @@ impl Request {
     /// Whether any `{{…}}` appears; variables are resolved from piece 1.3 on.
     #[must_use]
     pub fn has_template(&self) -> bool {
-        false
+        let has = |s: &str| s.contains("{{");
+        has(&self.url)
+            || self.headers.iter().any(|(k, v)| has(k) || has(v))
+            || self.body.as_deref().is_some_and(has)
     }
 }
 
