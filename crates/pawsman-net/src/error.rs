@@ -33,6 +33,7 @@ enum Kind {
     Timeout(Phase),
     Protocol(String),
     Spill(String),
+    Start(String),
 }
 
 impl NetError {
@@ -96,6 +97,14 @@ impl NetError {
         }
     }
 
+    /// The network runtime or TLS setup could not start.
+    #[must_use]
+    pub fn start(reason: &str) -> Self {
+        Self {
+            kind: Kind::Start(reason.to_owned()),
+        }
+    }
+
     /// Writing the spilled body failed.
     #[must_use]
     pub fn spill(err: &dyn std::error::Error) -> Self {
@@ -116,6 +125,7 @@ impl fmt::Display for NetError {
             Kind::Timeout(Phase::Total) => f.write_str("request timed out"),
             Kind::Protocol(reason) => write!(f, "bad response: {reason}"),
             Kind::Spill(reason) => write!(f, "cannot write the body to a temp file: {reason}"),
+            Kind::Start(reason) => write!(f, "networking could not start: {reason}"),
         }
     }
 }
@@ -132,6 +142,7 @@ impl ErrorInfo for NetError {
             Kind::Timeout(_) => codes::TIMEOUT,
             Kind::Protocol(_) => codes::PROTOCOL,
             Kind::Spill(_) => codes::SPILL,
+            Kind::Start(_) => codes::START,
         }
     }
 
@@ -149,7 +160,7 @@ impl ErrorInfo for NetError {
                 Cow::Borrowed("Try again, or raise `[http] timeout_ms` in the settings.")
             }
             Kind::Spill(_) => Cow::Borrowed("Free some disk space in the temp directory."),
-            Kind::Protocol(_) => return None,
+            Kind::Protocol(_) | Kind::Start(_) => return None,
         };
         Some(help)
     }
@@ -159,7 +170,9 @@ impl ErrorInfo for NetError {
             Kind::Dns { .. } | Kind::Connect { .. } | Kind::Timeout(_) | Kind::Spill(_) => {
                 Retry::Retryable
             }
-            Kind::InvalidRequest { .. } | Kind::Tls { .. } | Kind::Protocol(_) => Retry::Permanent,
+            Kind::InvalidRequest { .. } | Kind::Tls { .. } | Kind::Protocol(_) | Kind::Start(_) => {
+                Retry::Permanent
+            }
         }
     }
 }

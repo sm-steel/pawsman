@@ -17,8 +17,20 @@ pub const PROTOCOL: ErrorCode = ErrorCode::new("net::protocol");
 /// A large body could not be written to its temp file.
 pub const SPILL: ErrorCode = ErrorCode::new("net::spill");
 
+/// The network runtime or TLS setup could not start.
+pub const START: ErrorCode = ErrorCode::new("net::start");
+
 /// Every code, for the registry test.
-pub const ALL: &[ErrorCode] = &[INVALID_REQUEST, DNS, CONNECT, TLS, TIMEOUT, PROTOCOL, SPILL];
+pub const ALL: &[ErrorCode] = &[
+    INVALID_REQUEST,
+    DNS,
+    CONNECT,
+    TLS,
+    TIMEOUT,
+    PROTOCOL,
+    SPILL,
+    START,
+];
 
 #[cfg(test)]
 mod tests {
