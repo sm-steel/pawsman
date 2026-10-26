@@ -521,6 +521,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "indexmap"
+version = "2.14.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc4e190f5d26ca7051642629da2c52fc03bde85a03197c99408dcd291734c855"
+dependencies = [
+ "equivalent",
+ "hashbrown 0.17.1",
+]
+
+[[package]]
 name = "indoc"
 version = "2.0.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -846,6 +856,17 @@ dependencies = [
 [[package]]
 name = "pawsman-error"
 version = "0.0.0"
+
+[[package]]
+name = "pawsman-model"
+version = "0.0.0"
+dependencies = [
+ "pawsman-error",
+ "pawsman-test-support",
+ "rstest",
+ "serde",
+ "toml",
+]
 
 [[package]]
 name = "pawsman-test-support"
@@ -1399,6 +1420,7 @@ version = "1.1.8+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "20489e00e4d8741d6be680764cc12e270655e375a20d1011e844a9c3379e678d"
 dependencies = [
+ "indexmap",
  "serde_core",
  "serde_spanned",
  "toml_datetime",
