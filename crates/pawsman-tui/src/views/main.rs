@@ -116,22 +116,22 @@ fn panes(
     res: Option<Rect>,
 ) {
     if let Some(area) = side {
-        let inner = framed(frame, area, " Requests ", view.focus == Focus::Sidebar);
+        let inner = framed(frame, area, " Requests ", Focus::Sidebar, view.focus);
         sidebar::draw(frame, inner, view.snapshot, view.selected);
     }
     if let Some(area) = req {
-        let inner = framed(frame, area, " Request ", view.focus == Focus::Request);
+        let inner = framed(frame, area, " Request ", Focus::Request, view.focus);
         request::draw(frame, inner, view.snapshot, view.selected);
     }
     if let Some(area) = res {
-        let inner = framed(frame, area, " Response ", view.focus == Focus::Response);
+        let inner = framed(frame, area, " Response ", Focus::Response, view.focus);
         response::draw(frame, inner, view);
     }
 }
 
 /// Draws a bordered pane, accented when focused; returns its inside.
-fn framed(frame: &mut Frame, area: Rect, title: &str, focused: bool) -> Rect {
-    let colour = if focused { ACCENT } else { DIM };
+fn framed(frame: &mut Frame, area: Rect, title: &str, pane: Focus, focus: Focus) -> Rect {
+    let colour = if pane == focus { ACCENT } else { DIM };
     let block = Block::bordered()
         .title(title.to_owned())
         .border_style(Style::new().fg(colour));

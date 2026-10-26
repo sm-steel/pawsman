@@ -34,15 +34,16 @@ pub(crate) fn draw(
         .entries()
         .iter()
         .map(|entry| {
-            let mut line = match entry.kind() {
-                EntryKind::Request(r) => Line::from(vec![
+            let mut line = if let EntryKind::Request(r) = entry.kind() {
+                Line::from(vec![
                     Span::styled(
                         format!("{:<7}", r.method()),
                         Style::new().fg(method_color(r.method())),
                     ),
                     Span::raw(r.name().to_owned()),
-                ]),
-                _ => {
+                ])
+            } else {
+                {
                     let file = entry
                         .path()
                         .file_name()

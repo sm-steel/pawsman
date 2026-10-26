@@ -13,8 +13,10 @@ use pawsman_model::RequestId;
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::{Frame, Terminal};
 
+use crate::input::MouseKind;
 use crate::input::{Input, Reader};
 use crate::term::{Caps, InTmux, Term, probe};
+use crate::views::main::{self, Focus, MainView};
 use crate::views::splash::{self, Splash};
 use crate::views::{colors, help, home};
 use crate::{Options, TuiError};
@@ -78,7 +80,13 @@ pub(crate) const NOTICE_FOR: Duration = Duration::from_secs(5);
 enum Screen {
     Splash(Splash),
     Home,
+    Main,
 }
+
+/// How often the screen redraws while a request is in flight.
+const SENDING_TICK: Duration = Duration::from_millis(100);
+/// Lines a page key scrolls.
+const PAGE: u16 = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Overlay {
@@ -94,6 +102,11 @@ pub(crate) struct App {
     notices: VecDeque<Notice>,
     /// The current notice and when it expires, set when it is first drawn.
     shown: Option<(Notice, Duration)>,
+    snapshot: Option<Arc<Snapshot>>,
+    selected: Option<RequestId>,
+    focus: Focus,
+    scroll: u16,
+    commands: Vec<UiCommand>,
 }
 
 impl App {
@@ -108,28 +121,140 @@ impl App {
             caps,
             notices: notices.into(),
             shown: None,
+            snapshot: None,
+            selected: None,
+            focus: Focus::Sidebar,
+            scroll: 0,
+            commands: Vec::new(),
         }
+    }
+
+    /// The screen after the splash: the collection if one is open, else home.
+    fn landing(&self) -> Screen {
+        if self
+            .snapshot
+            .as_ref()
+            .is_some_and(|s| s.collection().is_some())
+        {
+            Screen::Main
+        } else {
+            Screen::Home
+        }
+    }
+
+    fn take_snapshot(&mut self, snapshot: Arc<Snapshot>) {
+        self.notices.extend(snapshot.notices().iter().cloned());
+        let fresh_error = snapshot.load_error().is_some()
+            && self
+                .snapshot
+                .as_ref()
+                .is_none_or(|s| s.load_error().is_none());
+        if fresh_error && let Some(err) = snapshot.load_error() {
+            self.notices.push_back(Notice::from_error(err));
+        }
+        if self.selected.is_none() {
+            self.selected = snapshot
+                .collection()
+                .and_then(|c| c.entries().first())
+                .map(pawsman_model::Entry::id);
+        }
+        self.snapshot = Some(snapshot);
+        if matches!(self.screen, Screen::Home) {
+            self.screen = self.landing();
+        }
+    }
+
+    /// Moves the selection by `step` entries, clamped to the list.
+    fn select(&mut self, step: isize) {
+        let Some(entries) = self
+            .snapshot
+            .as_ref()
+            .and_then(|s| s.collection())
+            .map(pawsman_model::Collection::entries)
+        else {
+            return;
+        };
+        let current = entries
+            .iter()
+            .position(|e| Some(e.id()) == self.selected)
+            .unwrap_or(0);
+        let next = current
+            .saturating_add_signed(step)
+            .min(entries.len().saturating_sub(1));
+        self.selected = entries.get(next).map(pawsman_model::Entry::id);
+        self.scroll = 0;
+    }
+
+    fn main_action(&mut self, action: Action) {
+        match action {
+            Action::Send => {
+                if let Some(id) = self.selected {
+                    self.commands.push(UiCommand::Send(id));
+                }
+            }
+            Action::Cancel => {
+                let sending = self
+                    .snapshot
+                    .as_ref()
+                    .zip(self.selected)
+                    .is_some_and(|(s, id)| {
+                        matches!(
+                            s.status(id),
+                            pawsman_core::state::RequestStatus::Sending { .. }
+                        )
+                    });
+                if sending && let Some(id) = self.selected {
+                    self.commands.push(UiCommand::Cancel(id));
+                }
+            }
+            Action::NextPane => self.focus = self.focus.next(),
+            Action::PrevPane => self.focus = self.focus.prev(),
+            Action::Up | Action::Down => {
+                let step = if action == Action::Up { -1 } else { 1 };
+                match self.focus {
+                    Focus::Sidebar => self.select(step),
+                    Focus::Response => self.scroll_by(if step < 0 { -1 } else { 1 }),
+                    Focus::Request => {}
+                }
+            }
+            Action::PageUp => self.scroll_by(-i32::from(PAGE)),
+            Action::PageDown => self.scroll_by(i32::from(PAGE)),
+            _ => {}
+        }
+    }
+
+    fn scroll_by(&mut self, step: i32) {
+        self.scroll = u16::try_from((i32::from(self.scroll) + step).max(0)).unwrap_or(u16::MAX);
     }
 
     fn context(&self) -> Context {
         match (&self.screen, self.overlay) {
             (Screen::Splash(_), _) => Context::Splash,
-            (Screen::Home, Overlay::Help) => Context::Help,
+            (Screen::Home | Screen::Main, Overlay::Help) => Context::Help,
             (Screen::Home, Overlay::None) => Context::Home,
+            (Screen::Main, Overlay::None) => Context::Main,
         }
     }
 
     /// Applies one message.
-    #[expect(
-        clippy::needless_pass_by_value,
-        reason = "messages hand over owned data (pasted text now, engine snapshots from 1.2)"
-    )]
     pub(crate) fn update(&mut self, msg: Msg, _now: Duration) -> Result<Flow, TuiError> {
         let chord = match msg {
             Msg::Terminate => return Ok(Flow::Quit),
             Msg::InputClosed => return Err(TuiError::input_closed()),
             Msg::Input(Input::Key(chord)) => chord,
-            Msg::Resize | Msg::Input(_) | Msg::Snapshot(_) => return Ok(Flow::Continue),
+            Msg::Snapshot(snapshot) => {
+                self.take_snapshot(snapshot);
+                return Ok(Flow::Continue);
+            }
+            Msg::Input(Input::Mouse(mouse)) => {
+                match mouse.kind() {
+                    MouseKind::ScrollUp => self.scroll_by(-3),
+                    MouseKind::ScrollDown => self.scroll_by(3),
+                    _ => {}
+                }
+                return Ok(Flow::Continue);
+            }
+            Msg::Resize | Msg::Input(_) => return Ok(Flow::Continue),
         };
         let action = keys::lookup(self.context(), chord);
         if let Screen::Splash(splash) = &mut self.screen
@@ -146,6 +271,7 @@ impl App {
                 "nothing selected · {} quits",
                 quit_label()
             ))),
+            Some(action) if matches!(self.screen, Screen::Main) => self.main_action(action),
             None if !chord.mods().is_empty() => tracing::debug!(%chord, "unbound key"),
             Some(_) | None => {}
         }
@@ -160,15 +286,24 @@ impl App {
                 splash.frame(now, frame.buffer_mut(), area);
                 return;
             }
-            self.screen = Screen::Home;
+            self.screen = self.landing();
         }
         self.expire(now);
-        home::draw(
-            frame,
-            area,
-            self.shown.as_ref().map(|(notice, _)| notice),
-            &self.caps,
-        );
+        let notice = self.shown.as_ref().map(|(notice, _)| notice);
+        match (&self.screen, &self.snapshot) {
+            (Screen::Main, Some(snapshot)) => {
+                let view = MainView {
+                    snapshot,
+                    selected: self.selected,
+                    focus: self.focus,
+                    scroll: self.scroll,
+                    now: Instant::now(),
+                    notice,
+                };
+                main::draw(frame, area, &view);
+            }
+            _ => home::draw(frame, area, notice, &self.caps),
+        }
         if self.overlay == Overlay::Help {
             help::draw(frame, area);
         }
@@ -188,18 +323,26 @@ impl App {
 
     /// The commands queued since the last call.
     pub(crate) fn take_commands(&mut self) -> Vec<UiCommand> {
-        Vec::new()
+        std::mem::take(&mut self.commands)
     }
 
     /// How long the loop may block before the next draw; `None` blocks until input.
     pub(crate) fn next_tick(&self, now: Duration) -> Option<Duration> {
         match &self.screen {
             Screen::Splash(splash) => splash.next_tick(now).or(Some(Duration::ZERO)),
-            Screen::Home => match (&self.shown, self.notices.is_empty()) {
-                (Some((_, until)), _) => Some(until.saturating_sub(now)),
-                (None, false) => Some(Duration::ZERO),
-                (None, true) => None,
-            },
+            Screen::Home | Screen::Main => {
+                let notice = match (&self.shown, self.notices.is_empty()) {
+                    (Some((_, until)), _) => Some(until.saturating_sub(now)),
+                    (None, false) => Some(Duration::ZERO),
+                    (None, true) => None,
+                };
+                let sending = self
+                    .snapshot
+                    .as_ref()
+                    .is_some_and(|s| s.any_sending())
+                    .then_some(SENDING_TICK);
+                notice.into_iter().chain(sending).min()
+            }
         }
     }
 }
