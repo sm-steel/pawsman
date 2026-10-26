@@ -1,5 +1,7 @@
 //! Command-line flags.
 
+use std::path::PathBuf;
+
 use clap::Parser;
 use pawsman_core::settings::ImageMode;
 
@@ -7,6 +9,8 @@ use pawsman_core::settings::ImageMode;
 #[derive(Debug, Parser)]
 #[command(name = "pawsman", version, about)]
 pub(crate) struct Args {
+    /// The collection directory to open.
+    pub(crate) dir: Option<PathBuf>,
     /// Start without the startup animation.
     #[arg(long)]
     pub(crate) no_splash: bool,

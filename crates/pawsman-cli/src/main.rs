@@ -50,7 +50,11 @@ fn main() -> ExitCode {
             SplashSetting::On
         };
     let images = args.images.unwrap_or_else(|| settings.ui().images());
-    match pawsman_tui::run(Options::new(env, splash, images).notices(notices)) {
+    let options = Options::new(env, splash, images)
+        .notices(notices)
+        .dir(args.dir)
+        .settings(settings);
+    match pawsman_tui::run(options) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             tracing::error!(code = %err.code(), %err, "exit");

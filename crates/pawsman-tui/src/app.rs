@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
+use pawsman_core::engine::Engine;
 use pawsman_core::keys::{self, Action, Context};
 use pawsman_core::notice::Notice;
 use pawsman_core::state::Snapshot;
@@ -352,7 +353,7 @@ impl App {
 /// # Errors
 ///
 /// Any `TuiError`: no terminal, a refused mode, a terminal write failure, or stopped input.
-pub fn run(options: Options) -> Result<(), TuiError> {
+pub fn run(mut options: Options) -> Result<(), TuiError> {
     let mut term = Term::open()?;
     // Inside tmux the passthrough replies only arrive before the alternate-screen switch; elsewhere
     // the alternate screen goes first, so a terminal that prints the query payload prints it there.
@@ -382,15 +383,30 @@ pub fn run(options: Options) -> Result<(), TuiError> {
     );
     term.enable_input(caps.keyboard());
     let (tx, rx) = std::sync::mpsc::channel();
+    let snapshots = tx.clone();
     let reader = Reader::spawn(term.reader()?, tx).map_err(TuiError::terminal_io)?;
+    let mut notices = Vec::new();
+    let engine = Engine::start(
+        options.take_dir(),
+        options.settings_ref(),
+        move |snapshot| {
+            let _ = snapshots.send(Msg::Snapshot(snapshot));
+        },
+    )
+    .inspect_err(|err| notices.push(Notice::from_error(err)))
+    .ok();
     let backend = CrosstermBackend::new(BufWriter::with_capacity(1 << 16, term.writer()?));
     let splash = options.splash();
     let result = Terminal::new(backend)
         .map_err(TuiError::terminal_io)
         .and_then(|mut terminal| {
-            let mut app = App::new(splash, caps, options.into_notices());
-            event_loop(&mut terminal, &mut app, &rx)
+            notices.extend(options.into_notices());
+            let mut app = App::new(splash, caps, notices);
+            event_loop(&mut terminal, &mut app, &rx, engine.as_ref())
         });
+    if let Some(engine) = engine {
+        engine.shutdown();
+    }
     reader.stop();
     term.restore();
     result
@@ -402,6 +418,7 @@ fn event_loop<B: Backend<Error = std::io::Error>>(
     terminal: &mut Terminal<B>,
     app: &mut App,
     rx: &Receiver<Msg>,
+    engine: Option<&Engine>,
 ) -> Result<(), TuiError> {
     let start = Instant::now();
     let mut frames = 0u32;
@@ -428,6 +445,13 @@ fn event_loop<B: Backend<Error = std::io::Error>>(
             if app.update(msg, start.elapsed())? == Flow::Quit {
                 tracing::info!(frames, "quit");
                 return Ok(());
+            }
+        }
+        for command in app.take_commands() {
+            match (engine, command) {
+                (Some(engine), UiCommand::Send(id)) => engine.send(id),
+                (Some(engine), UiCommand::Cancel(id)) => engine.cancel(id),
+                (None, _) => {}
             }
         }
     }
