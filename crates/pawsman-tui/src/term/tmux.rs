@@ -22,7 +22,15 @@ impl InTmux {
 /// Wraps `seq` for tmux: `ESC P tmux;` + `seq` with every ESC doubled + `ESC \`.
 #[must_use]
 pub fn passthrough(seq: &[u8]) -> Vec<u8> {
-    seq.to_vec()
+    let mut out = b"\x1bPtmux;".to_vec();
+    for &b in seq {
+        if b == 0x1b {
+            out.push(0x1b);
+        }
+        out.push(b);
+    }
+    out.extend_from_slice(b"\x1b\\");
+    out
 }
 
 #[cfg(test)]

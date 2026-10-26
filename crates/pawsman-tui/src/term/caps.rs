@@ -112,15 +112,34 @@ impl Caps {
     /// Resolves the capabilities; an explicit `images` mode wins over the probe.
     #[must_use]
     pub fn resolve(replies: &Replies, env: &EnvSnapshot, images: ImageMode) -> Self {
-        let _ = (replies, env, images);
+        let tmux = InTmux::from_env(env);
+        let dumb = env.term() == Some("dumb");
+        let (graphics, hint) = graphics(replies, env, images, tmux);
+        let color = if dumb {
+            ColorDepth::Ansi16
+        } else if env.truecolor() || replies.truecolor {
+            ColorDepth::TrueColor
+        } else if tmux == InTmux::Yes || env.term().is_some_and(|t| t.contains("256")) {
+            ColorDepth::Indexed256
+        } else {
+            ColorDepth::Ansi16
+        };
         Self {
-            graphics: Graphics::Off,
-            keyboard: KeyboardProtocol::Legacy,
-            color: ColorDepth::Ansi16,
-            cell_px: None,
-            tmux: InTmux::No,
-            ssh: OverSsh::No,
-            hint: None,
+            graphics,
+            keyboard: if replies.keyboard {
+                KeyboardProtocol::Kitty
+            } else {
+                KeyboardProtocol::Legacy
+            },
+            color,
+            cell_px: replies.cell_px,
+            tmux,
+            ssh: if env.over_ssh() {
+                OverSsh::Yes
+            } else {
+                OverSsh::No
+            },
+            hint,
         }
     }
 
@@ -164,6 +183,44 @@ impl Caps {
     #[must_use]
     pub fn hint(&self) -> Option<CapsHint> {
         self.hint
+    }
+}
+
+/// The image mode and any hint. Inside tmux only the outer terminal's DA1 (the second) decides
+/// sixel, since tmux answers the first itself and claims sixel on the outer terminal's behalf.
+fn graphics(
+    replies: &Replies,
+    env: &EnvSnapshot,
+    images: ImageMode,
+    tmux: InTmux,
+) -> (Graphics, Option<CapsHint>) {
+    let utf8 = env.utf8_locale();
+    let dumb = env.term() == Some("dumb");
+    let outer_da1 = match tmux {
+        InTmux::Yes => replies.da1.get(1),
+        InTmux::No => replies.da1.first(),
+    };
+    match images {
+        ImageMode::Kitty => (Graphics::Kitty, None),
+        ImageMode::Sixel => (Graphics::Sixel, None),
+        ImageMode::Blocks => (Graphics::Blocks, None),
+        ImageMode::Off => (Graphics::Off, None),
+        ImageMode::Auto if dumb => (Graphics::Off, None),
+        ImageMode::Auto if tmux == InTmux::Yes && !utf8 => {
+            (Graphics::Off, Some(CapsHint::TmuxNeedsUtf8))
+        }
+        ImageMode::Auto if replies.graphics => (Graphics::Kitty, None),
+        ImageMode::Auto => {
+            let hint = (tmux == InTmux::Yes).then_some(CapsHint::TmuxPassthrough);
+            let fallback = if outer_da1.is_some_and(|d| d.sixel) {
+                Graphics::Sixel
+            } else if utf8 {
+                Graphics::Blocks
+            } else {
+                Graphics::Off
+            };
+            (fallback, hint)
+        }
     }
 }
 

@@ -33,10 +33,21 @@ impl Query {
 /// query and a second DA1 go through passthrough; the outer terminal answers them in order.
 #[must_use]
 pub fn query(tmux: InTmux) -> Query {
-    let _ = (tmux, GRAPHICS_QUERY, PLAIN_QUERY, DA1, passthrough);
-    Query {
-        bytes: Vec::new(),
-        da1_needed: 0,
+    match tmux {
+        InTmux::No => Query {
+            bytes: [GRAPHICS_QUERY, PLAIN_QUERY, DA1].concat(),
+            da1_needed: 1,
+        },
+        InTmux::Yes => Query {
+            bytes: [
+                PLAIN_QUERY,
+                DA1,
+                &passthrough(GRAPHICS_QUERY),
+                &passthrough(DA1),
+            ]
+            .concat(),
+            da1_needed: 2,
+        },
     }
 }
 
@@ -65,8 +76,75 @@ pub struct Replies {
 /// Parses whatever replies arrived; unknown or truncated bytes are skipped.
 #[must_use]
 pub fn parse(bytes: &[u8]) -> Replies {
-    let _ = bytes;
-    Replies::default()
+    let mut replies = Replies::default();
+    let mut rest = bytes;
+    while let Some(start) = rest.iter().position(|&b| b == 0x1b) {
+        rest = rest.get(start..).unwrap_or_default();
+        let consumed = match rest.get(1) {
+            Some(b'_') => apc(rest, &mut replies),
+            Some(b'P') => dcs(rest, &mut replies),
+            Some(b'[') => csi(rest, &mut replies),
+            _ => 1,
+        };
+        rest = rest.get(consumed.max(1)..).unwrap_or_default();
+    }
+    replies
+}
+
+/// The length of a string sequence up to and including `ESC \`, or all of `rest`.
+fn string_end(rest: &[u8]) -> usize {
+    find(rest, b"\x1b\\").map_or(rest.len(), |i| i + 2)
+}
+
+fn apc(rest: &[u8], replies: &mut Replies) -> usize {
+    let end = string_end(rest);
+    let body = rest.get(2..end.saturating_sub(2)).unwrap_or_default();
+    if body.first() == Some(&b'G') && body.ends_with(b";OK") && find(body, b"i=31").is_some() {
+        replies.graphics = true;
+    }
+    end
+}
+
+fn dcs(rest: &[u8], replies: &mut Replies) -> usize {
+    let end = string_end(rest);
+    let body = rest.get(2..end.saturating_sub(2)).unwrap_or_default();
+    if body.starts_with(b"1$r")
+        && (find(body, b"48:2:1:2:3").is_some() || find(body, b"48;2;1;2;3").is_some())
+    {
+        replies.truecolor = true;
+    }
+    end
+}
+
+fn csi(rest: &[u8], replies: &mut Replies) -> usize {
+    let body = rest.get(2..).unwrap_or_default();
+    let Some(fin) = body.iter().position(|b| (0x40..=0x7e).contains(b)) else {
+        return rest.len();
+    };
+    let params = body.get(..fin).unwrap_or_default();
+    match body.get(fin) {
+        Some(b'u') if params.first() == Some(&b'?') => replies.keyboard = true,
+        Some(b'c') if params.first() == Some(&b'?') => {
+            let sixel = params
+                .get(1..)
+                .unwrap_or_default()
+                .split(|&b| b == b';')
+                .any(|a| a == b"4");
+            replies.da1.push(Da1 { sixel });
+        }
+        Some(b't') => {
+            let nums: Vec<u16> = std::str::from_utf8(params)
+                .unwrap_or("")
+                .split(';')
+                .filter_map(|n| n.parse().ok())
+                .collect();
+            if let [6, h, w] = nums.as_slice() {
+                replies.cell_px = Some(CellPx::new(*w, *h));
+            }
+        }
+        _ => {}
+    }
+    2 + fin + 1
 }
 
 pub(super) fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
