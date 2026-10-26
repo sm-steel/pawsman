@@ -195,10 +195,42 @@ pub fn read_replies<F: Read + AsFd>(
     query: &Query,
     timeouts: Timeouts,
 ) -> io::Result<Probed> {
-    let _ = (tty, query, timeouts, poll_in::<F>);
+    let start = Instant::now();
+    let mut bytes = Vec::new();
+    let mut deadline = start + timeouts.reply;
+    let mut in_grace = false;
+    let mut short_wait = false;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            if in_grace || short_wait {
+                break;
+            }
+            in_grace = true;
+            deadline = Instant::now() + timeouts.grace;
+            continue;
+        }
+        if !poll_in(tty, left)? {
+            continue;
+        }
+        let mut chunk = [0u8; 1024];
+        let n = tty.read(&mut chunk)?;
+        if n == 0 {
+            break;
+        }
+        bytes.extend_from_slice(chunk.get(..n).unwrap_or_default());
+        let seen = parse(&bytes).da1.len();
+        if seen >= query.da1_needed() {
+            break;
+        }
+        if seen >= 1 && query.da1_needed() > 1 && !short_wait {
+            short_wait = true;
+            deadline = deadline.min(Instant::now() + timeouts.tmux_grace);
+        }
+    }
     Ok(Probed {
-        bytes: Vec::new(),
-        took: Duration::ZERO,
+        bytes,
+        took: start.elapsed(),
     })
 }
 

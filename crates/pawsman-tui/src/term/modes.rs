@@ -9,7 +9,7 @@ use rustix::termios::{OptionalActions, Termios, tcsetattr};
 
 /// One terminal mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Mode {
+pub(crate) enum Mode {
     /// Raw input through termios; undone by restoring the saved termios.
     Raw,
     /// The alternate screen.
@@ -27,7 +27,7 @@ pub enum Mode {
 }
 
 /// The modes in setup order.
-pub const MODES: &[Mode] = &[
+pub(crate) const MODES: &[Mode] = &[
     Mode::Raw,
     Mode::AltScreen,
     Mode::HiddenCursor,
@@ -40,7 +40,7 @@ pub const MODES: &[Mode] = &[
 impl Mode {
     /// The bytes that turn the mode on; empty for `Raw`.
     #[must_use]
-    pub const fn on(self) -> &'static [u8] {
+    pub(crate) const fn on(self) -> &'static [u8] {
         match self {
             Self::Raw => b"",
             Self::AltScreen => b"\x1b[?1049h",
@@ -54,7 +54,7 @@ impl Mode {
 
     /// The bytes that turn it off; empty for `Raw`.
     #[must_use]
-    pub const fn off(self) -> &'static [u8] {
+    pub(crate) const fn off(self) -> &'static [u8] {
         match self {
             Self::Raw => b"",
             Self::AltScreen => b"\x1b[?1049l",
@@ -68,7 +68,7 @@ impl Mode {
 
     /// A name for errors and logs.
     #[must_use]
-    pub const fn name(self) -> &'static str {
+    pub(crate) const fn name(self) -> &'static str {
         match self {
             Self::Raw => "raw",
             Self::AltScreen => "alternate screen",
@@ -81,8 +81,12 @@ impl Mode {
     }
 }
 
+fn order(mode: Mode) -> usize {
+    MODES.iter().position(|m| *m == mode).unwrap_or(usize::MAX)
+}
+
 /// Active modes, the terminal to write their undo to, and the termios to restore.
-pub struct Stack {
+pub(crate) struct Stack {
     out: Box<dyn Write + Send>,
     raw: Option<(OwnedFd, Termios)>,
     active: Vec<Mode>,
@@ -91,7 +95,7 @@ pub struct Stack {
 impl Stack {
     /// A stack writing undo sequences to `out`.
     #[must_use]
-    pub fn new(out: Box<dyn Write + Send>) -> Self {
+    pub(crate) fn new(out: Box<dyn Write + Send>) -> Self {
         Self {
             out,
             raw: None,
@@ -101,24 +105,33 @@ impl Stack {
 
     /// Remembers the termios to restore when `Raw` is undone.
     #[must_use]
-    pub fn with_raw(mut self, fd: OwnedFd, saved: Termios) -> Self {
+    pub(crate) fn with_raw(mut self, fd: OwnedFd, saved: Termios) -> Self {
         self.raw = Some((fd, saved));
         self
     }
 
-    /// Records that `mode` is on.
-    pub fn push(&mut self, mode: Mode) {
+    /// Records that `mode` is on. Modes go on in `MODES` order, so undoing newest first undoes
+    /// them in reverse setup order.
+    pub(crate) fn push(&mut self, mode: Mode) {
+        debug_assert!(
+            self.active
+                .last()
+                .is_none_or(|last| order(*last) < order(mode)),
+            "{mode:?} pushed out of MODES order after {:?}",
+            self.active.last()
+        );
         self.active.push(mode);
     }
 
     /// The modes that are on, oldest first.
+    #[cfg(test)]
     #[must_use]
-    pub fn active(&self) -> &[Mode] {
+    pub(crate) fn active(&self) -> &[Mode] {
         &self.active
     }
 
     /// Undoes every active mode, newest first; errors are ignored, since this runs on the way out.
-    pub fn undo_all(&mut self) {
+    pub(crate) fn undo_all(&mut self) {
         while let Some(mode) = self.active.pop() {
             if mode == Mode::Raw {
                 if let Some((fd, saved)) = &self.raw {
@@ -135,12 +148,12 @@ impl Stack {
 static STACK: Mutex<Option<Stack>> = Mutex::new(None);
 
 /// Makes `stack` the process-wide stack that `restore` and the panic hook undo.
-pub fn install(stack: Stack) {
+pub(crate) fn install(stack: Stack) {
     *STACK.lock().unwrap_or_else(PoisonError::into_inner) = Some(stack);
 }
 
 /// Records `mode` on the process-wide stack.
-pub fn push(mode: Mode) {
+pub(crate) fn push(mode: Mode) {
     if let Some(stack) = STACK
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
@@ -151,7 +164,7 @@ pub fn push(mode: Mode) {
 }
 
 /// Undoes every mode. Safe to call more than once.
-pub fn restore() {
+pub(crate) fn restore() {
     if let Some(stack) = STACK
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
@@ -162,7 +175,7 @@ pub fn restore() {
 }
 
 /// Like `restore`, but never blocks: a panic while the stack is locked leaves it as it is.
-pub fn restore_from_panic() {
+pub(crate) fn restore_from_panic() {
     let mut guard = match STACK.try_lock() {
         Ok(guard) => guard,
         Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
@@ -175,7 +188,7 @@ pub fn restore_from_panic() {
 
 /// Restores the terminal before the default panic message, on the main thread only: a worker's
 /// panic ends its thread, and the main loop sees the closed channel and exits cleanly.
-pub fn install_panic_hook() {
+pub(crate) fn install_panic_hook() {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         tracing::error!(panic = %info, "panic");
