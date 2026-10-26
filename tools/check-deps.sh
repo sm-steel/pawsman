@@ -26,4 +26,6 @@ forbid pawsman-script tokio reqwest "${ui[@]}"
 forbid pawsman-import tokio reqwest rhai "${ui[@]}"
 forbid pawsman-core tokio reqwest "${ui[@]}"
 forbid pawsman-net rhai "${ui[@]}"
+forbid pawsman-tui tokio reqwest rhai
+forbid pawsman-cli tokio reqwest
 echo "crate boundaries ok"

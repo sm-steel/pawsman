@@ -5,8 +5,10 @@ mod app;
 pub mod codes;
 mod error;
 pub mod input;
+mod options;
 pub mod term;
 mod views;
 
-pub use app::SplashSetting;
+pub use app::{SplashSetting, run};
 pub use error::TuiError;
+pub use options::Options;

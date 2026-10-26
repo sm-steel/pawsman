@@ -1,6 +1,20 @@
 //! The main loop and its state.
 
-use crate::input::Input;
+use std::collections::VecDeque;
+use std::io::BufWriter;
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::time::{Duration, Instant};
+
+use pawsman_core::keys::{self, Action, Context};
+use pawsman_core::notice::Notice;
+use ratatui::backend::{Backend, CrosstermBackend};
+use ratatui::{Frame, Terminal};
+
+use crate::input::{Input, Reader};
+use crate::term::{Caps, InTmux, Term, probe};
+use crate::views::splash::{self, Splash};
+use crate::views::{help, home};
+use crate::{Options, TuiError};
 
 /// Everything the main loop reacts to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -14,18 +28,6 @@ pub(crate) enum Msg {
     /// The input thread hit end of file or an error.
     InputClosed,
 }
-
-use std::collections::VecDeque;
-use std::time::Duration;
-
-use pawsman_core::keys::{self, Action, Context};
-use pawsman_core::notice::Notice;
-use ratatui::Frame;
-
-use crate::TuiError;
-use crate::term::Caps;
-use crate::views::splash::{self, Splash};
-use crate::views::{help, home};
 
 /// Whether the startup splash plays.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,8 +105,10 @@ impl App {
             Msg::Resize | Msg::Input(_) => return Ok(Flow::Continue),
         };
         let action = keys::lookup(self.context(), chord);
-        if matches!(self.screen, Screen::Splash(_)) && action != Some(Action::Quit) {
-            self.screen = Screen::Home;
+        if let Screen::Splash(splash) = &mut self.screen
+            && action != Some(Action::Quit)
+        {
+            splash.skip();
             return Ok(Flow::Continue);
         }
         match action {
@@ -163,6 +167,82 @@ impl App {
                 (None, false) => Some(Duration::ZERO),
                 (None, true) => None,
             },
+        }
+    }
+}
+
+/// Runs the TUI until Ctrl-Q, a signal or an error; the terminal is restored on every path.
+///
+/// # Errors
+///
+/// Any `TuiError`: no terminal, a refused mode, a terminal write failure, or stopped input.
+pub fn run(options: Options) -> Result<(), TuiError> {
+    let mut term = Term::open()?;
+    let probed = term.probe(InTmux::from_env(options.env()))?;
+    let caps = Caps::resolve(
+        &probe::parse(&probed.bytes),
+        options.env(),
+        options.images(),
+    );
+    tracing::info!(
+        graphics = ?caps.graphics(),
+        keyboard = ?caps.keyboard(),
+        color = ?caps.color(),
+        tmux = ?caps.tmux(),
+        ssh = ?caps.ssh(),
+        cell_px = ?caps.cell_px(),
+        probe_ms = u64::try_from(probed.took.as_millis()).unwrap_or(u64::MAX),
+        "probe"
+    );
+    term.enable_input(caps.keyboard());
+    let (tx, rx) = std::sync::mpsc::channel();
+    let reader = Reader::spawn(term.reader()?, tx).map_err(TuiError::terminal_io)?;
+    let backend = CrosstermBackend::new(BufWriter::with_capacity(1 << 16, term.writer()?));
+    let splash = options.splash();
+    let result = Terminal::new(backend)
+        .map_err(TuiError::terminal_io)
+        .and_then(|mut terminal| {
+            let mut app = App::new(splash, caps, options.into_notices());
+            event_loop(&mut terminal, &mut app, &rx)
+        });
+    reader.stop();
+    term.restore();
+    result
+}
+
+/// Draws, then waits for the next message or tick; every queued message is handled before the
+/// next draw, and the loop blocks without a timer when nothing on screen moves.
+fn event_loop<B: Backend<Error = std::io::Error>>(
+    terminal: &mut Terminal<B>,
+    app: &mut App,
+    rx: &Receiver<Msg>,
+) -> Result<(), TuiError> {
+    let start = Instant::now();
+    let mut frames = 0u32;
+    // No `terminal.clear()`: it asks the terminal for the cursor position and crossterm reads the
+    // reply from the tty itself, racing the input thread. The alternate screen starts blank.
+    loop {
+        let now = start.elapsed();
+        terminal
+            .draw(|f| app.draw(f, now))
+            .map_err(TuiError::terminal_io)?;
+        frames += 1;
+        let first = match app.next_tick(start.elapsed()) {
+            Some(wait) => match rx.recv_timeout(wait) {
+                Ok(msg) => Some(msg),
+                Err(RecvTimeoutError::Timeout) => None,
+                Err(RecvTimeoutError::Disconnected) => Some(Msg::InputClosed),
+            },
+            None => Some(rx.recv().unwrap_or(Msg::InputClosed)),
+        };
+        for msg in first
+            .into_iter()
+            .chain(std::iter::from_fn(|| rx.try_recv().ok()))
+        {
+            if app.update(msg, start.elapsed())? == Flow::Quit {
+                tracing::info!(frames, "quit");
+                return Ok(());
+            }
         }
     }
 }
