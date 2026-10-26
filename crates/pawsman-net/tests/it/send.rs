@@ -1,4 +1,9 @@
 //! Sending requests through `Net` to `FakeHttp`.
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test helpers: rust rule 1 applies outside tests only"
+)]
 
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
