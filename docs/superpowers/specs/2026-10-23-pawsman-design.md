@@ -43,7 +43,7 @@ Crates are split along purity and heavy dependencies; `tools/check-deps.sh` and 
 | `pawsman-core` | Engine: session, `AppState::apply` reducer, store and watcher, secrets, history, runner, key table, settings; no terminal deps | notify, secrecy, keyring, age |
 | `pawsman-tui` | `term` module (probe, mode stack, graphics, OSC 52), views, input | ratatui, crossterm, unicode-width, image |
 | `pawsman-cli` | Binary `pawsman`: TUI by default, `pawsman run` headless runner, later `pawsman mock` | clap |
-| `pawsman-test-support` | Fakes and fixtures (`publish = false`) | wiremock |
+| `pawsman-test-support` | Fakes and fixtures (`publish = false`) | hyper (own fake HTTP server) |
 
 Later milestones add `pawsman-mock` (axum, M6), `pawsman-git` (gix, M7) and `pawsman-ai` (Claude API over reqwest, M7). Each milestone spec lists its dependencies for approval before they are added.
 
@@ -227,7 +227,7 @@ Every mode the app enables (alternate screen, raw mode, kitty keyboard flags, mo
 
 - Tests first: a `test:` commit failing on assertions, approval, then `feat:` or `fix:`.
 - nextest; insta for format round trips and rendered buffers; proptest for interpolation, TOML round trips and the cURL parser; rstest for tables.
-- Fakes, not mocks: wiremock for HTTP; WebSocket, SSE and gRPC fake servers in `pawsman-test-support`. Fake secrets carry the `PAWSMAN_FAKE` marker.
+- Fakes, not mocks: a fake HTTP server, then WebSocket, SSE and gRPC fake servers, in `pawsman-test-support`. Fake secrets carry the `PAWSMAN_FAKE` marker.
 - `#[tokio::test(start_paused = true)]` for timing.
 - `TestBackend` assertions plus visual PNG checks (`target/visual/*.png`) for UI changes.
 - PTY tests replay canned terminal responses to cover each probe and fallback path, including Ctrl-Q in a legacy terminal.
@@ -246,7 +246,7 @@ Each milestone gets its own spec and plan when it starts, tracked as a GitHub mi
 | Milestone | Delivers | Exit check |
 | --- | --- | --- |
 | M0 Foundations | Tooling, docs, rules; Bruno inventory; PoCs (separate scratch repo) for kitty images over SSH and tmux, keyboard protocol, OSC 52, Rhai limits | Every PoC demonstrated in kitty over `ssh localhost` and in tmux |
-| M1 HTTP client | Startup animation first (the earliest shippable slice), then model and format, environments and variables, store and watcher, three-pane TUI, request editing and `$EDITOR`, response viewer (JSON, images, hex), timeline, history, cURL import and export, command palette | Edit and send requests against a wiremock fake in the TUI; visual PNG files reviewed |
+| M1 HTTP client | Startup animation first (the earliest shippable slice), then model and format, environments and variables, store and watcher, three-pane TUI, request editing and `$EDITOR`, response viewer (JSON, images, hex), timeline, history, cURL import and export, command palette | Edit and send requests against a fake HTTP server in the TUI; visual PNG files reviewed |
 | M2 Tests and runner | Captures, assertions, Rhai sandbox, request chaining, collection runner, `pawsman run` with JUnit and JSON reports | Runner passes a fixture collection in CI |
 | M3 Auth and network | Basic, Bearer, Digest, AWS SigV4, NTLM; OAuth2 (auth code with PKCE over a loopback redirect, client credentials, refresh); cookies; HTTP, SOCKS and PAC proxies; mTLS; layered secrets and vault | OAuth2 auth-code flow completes over SSH with the URL copied through OSC 52 |
 | M4 Protocols | GraphQL (editor, variables, introspection, docs explorer), SSE, WebSocket, gRPC (reflection and `.proto`, unary and all streaming modes) | Each protocol works against a fake in the TUI |

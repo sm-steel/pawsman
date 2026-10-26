@@ -14,7 +14,7 @@
 
 - Tests first: a `test:` commit failing on assertions, then the implementation ([rules §1](../rules/rust-project.md#1-working-agreement)).
 - Test names are sentences; arrange, act, assert separated by blank lines; assertions carry a message.
-- Fakes, not mocks: wiremock for HTTP, fake WebSocket, SSE and gRPC servers in `pawsman-test-support`.
+- Fakes, not mocks: `pawsman_test_support::fake_http::FakeHttp` for HTTP (routes, delays, trickles, a record of requests), fake WebSocket, SSE and gRPC servers in `pawsman-test-support` later.
 - Fake secrets contain `PAWSMAN_FAKE`; gitleaks allowlists only that marker.
 - Async tests use `#[tokio::test(start_paused = true)]`.
 - Runner: cargo-nextest (`.config/nextest.toml`); CI sets `NEXTEST_PROFILE=ci` for no fail-fast and JUnit output.

@@ -1,6 +1,6 @@
 # pawsman
 
-A pure-Rust terminal API client inspired by Bruno. Current phase: **M1 HTTP client** ([spec](docs/superpowers/specs/2026-10-26-m1-http-client-design.md)), piece 1.1 ([plan](docs/superpowers/plans/2026-10-26-m1-1-binary-terminal-splash.md)).
+A pure-Rust terminal API client inspired by Bruno. Current phase: **M1 HTTP client** ([spec](docs/superpowers/specs/2026-10-26-m1-http-client-design.md)), piece 1.2 ([plan](docs/superpowers/plans/2026-10-26-m1-2-thin-path.md)).
 
 ## IMPORTANT
 
@@ -60,6 +60,7 @@ Pinned in `mise.toml`; Rust in `rust-toolchain.toml`. Added with the milestone t
 
 - [Program spec](docs/superpowers/specs/2026-10-23-pawsman-design.md): goal, crates, format, TUI, milestones
 - [M1 spec](docs/superpowers/specs/2026-10-26-m1-http-client-design.md): current milestone, its pieces and decisions
+- [M1.2 plan](docs/superpowers/plans/2026-10-26-m1-2-thin-path.md): thin path from a request file to a response
 - [M1.1 plan](docs/superpowers/plans/2026-10-26-m1-1-binary-terminal-splash.md): binary, terminal layer and splash tasks
 - [M0 plan](docs/superpowers/plans/2026-10-23-m0-foundations.md): finished foundations milestone
 - [Architecture](docs/ARCHITECTURE.md): crates, threads, collection layout, variable scopes
