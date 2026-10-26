@@ -26,15 +26,28 @@ impl Outgoing {
         headers: &[(String, String)],
         body: Option<&str>,
     ) -> Result<Self, NetError> {
-        let _ = (
+        let method = Method::from_bytes(method.as_bytes())
+            .map_err(|_| NetError::invalid_request("method", method))?;
+        let bad_url = || NetError::invalid_request("url", url);
+        let uri: Uri = url.parse().map_err(|_| bad_url())?;
+        let scheme_ok = matches!(uri.scheme_str(), Some("http" | "https"));
+        if !scheme_ok || uri.host().is_none_or(str::is_empty) {
+            return Err(bad_url());
+        }
+        let mut map = HeaderMap::new();
+        for (name, value) in headers {
+            let name = HeaderName::from_bytes(name.as_bytes())
+                .map_err(|_| NetError::invalid_request("header name", name))?;
+            let value = HeaderValue::from_str(value)
+                .map_err(|_| NetError::invalid_request("header value", value))?;
+            map.append(name, value);
+        }
+        Ok(Self {
             method,
-            url,
-            headers,
-            body,
-            HeaderName::from_static,
-            HeaderValue::from_static,
-        );
-        Err(NetError::protocol("todo"))
+            uri,
+            headers: map,
+            body: body.map_or_else(Bytes::new, |b| Bytes::copy_from_slice(b.as_bytes())),
+        })
     }
 
     /// The host, for logs.

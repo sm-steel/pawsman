@@ -107,8 +107,16 @@ impl NetError {
 
 impl fmt::Display for NetError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let _ = &self.kind;
-        f.write_str("")
+        match &self.kind {
+            Kind::InvalidRequest { what, value } => write!(f, "invalid {what} `{value}`"),
+            Kind::Dns { host, reason } => write!(f, "cannot resolve `{host}`: {reason}"),
+            Kind::Connect { host, reason } => write!(f, "cannot connect to `{host}`: {reason}"),
+            Kind::Tls { host, reason } => write!(f, "tls handshake with `{host}`: {reason}"),
+            Kind::Timeout(Phase::Connect) => f.write_str("connection timed out"),
+            Kind::Timeout(Phase::Total) => f.write_str("request timed out"),
+            Kind::Protocol(reason) => write!(f, "bad response: {reason}"),
+            Kind::Spill(reason) => write!(f, "cannot write the body to a temp file: {reason}"),
+        }
     }
 }
 
@@ -116,15 +124,43 @@ impl std::error::Error for NetError {}
 
 impl ErrorInfo for NetError {
     fn code(&self) -> ErrorCode {
-        codes::PROTOCOL
+        match self.kind {
+            Kind::InvalidRequest { .. } => codes::INVALID_REQUEST,
+            Kind::Dns { .. } => codes::DNS,
+            Kind::Connect { .. } => codes::CONNECT,
+            Kind::Tls { .. } => codes::TLS,
+            Kind::Timeout(_) => codes::TIMEOUT,
+            Kind::Protocol(_) => codes::PROTOCOL,
+            Kind::Spill(_) => codes::SPILL,
+        }
     }
 
     fn help(&self) -> Option<Cow<'_, str>> {
-        None
+        let help: Cow<'_, str> = match &self.kind {
+            Kind::InvalidRequest { what, .. } => {
+                Cow::Owned(format!("Fix the {what} in the request file."))
+            }
+            Kind::Dns { .. } => Cow::Borrowed("Check the host name and your network."),
+            Kind::Connect { .. } => {
+                Cow::Borrowed("Check that the server is running and the port is right.")
+            }
+            Kind::Tls { .. } => Cow::Borrowed("Check the URL scheme and the server's certificate."),
+            Kind::Timeout(_) => {
+                Cow::Borrowed("Try again, or raise `[http] timeout_ms` in the settings.")
+            }
+            Kind::Spill(_) => Cow::Borrowed("Free some disk space in the temp directory."),
+            Kind::Protocol(_) => return None,
+        };
+        Some(help)
     }
 
     fn retry(&self) -> Retry {
-        Retry::Permanent
+        match self.kind {
+            Kind::Dns { .. } | Kind::Connect { .. } | Kind::Timeout(_) | Kind::Spill(_) => {
+                Retry::Retryable
+            }
+            Kind::InvalidRequest { .. } | Kind::Tls { .. } | Kind::Protocol(_) => Retry::Permanent,
+        }
     }
 }
 
