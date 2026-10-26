@@ -149,7 +149,10 @@ impl fmt::Display for Chord {
         }
         let name = match self.code {
             KeyCode::Char(' ') => "Space",
-            KeyCode::Char(c) => return write!(f, "{}", c.to_uppercase()),
+            KeyCode::Char(c) if self.mods.contains(Mods::CTRL) || self.mods.contains(Mods::ALT) => {
+                return write!(f, "{}", c.to_uppercase());
+            }
+            KeyCode::Char(c) => return write!(f, "{c}"),
             KeyCode::F(n) => return write!(f, "F{n}"),
             KeyCode::Enter => "Enter",
             KeyCode::Esc => "Esc",
