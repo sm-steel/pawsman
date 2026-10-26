@@ -40,7 +40,7 @@ mod tests {
     }
 
     #[rstest]
-    #[case(Color::Rgb(255, 105, 180), Color::LightMagenta)]
+    #[case(Color::Rgb(255, 105, 180), Color::Magenta)]
     #[case(Color::Rgb(90, 210, 255), Color::LightCyan)]
     #[case(Color::Rgb(22, 22, 34), Color::Black)]
     #[case(Color::Indexed(196), Color::LightRed)]
