@@ -756,6 +756,26 @@ mod tests {
         }
 
         #[test]
+        fn a_large_body_shows_its_first_part_quickly() {
+            let mut st = state(FILES);
+            done(&mut st, 1, 200, &vec![b'a'; 4 * 1024 * 1024]);
+            let mut app = app_with(&mut st);
+
+            let started = std::time::Instant::now();
+            let text = screen(&render(&mut app, 160, 40, Duration::ZERO));
+
+            assert!(
+                text.contains("showing the first 256.0 KB"),
+                "says it is cut:\n{text}"
+            );
+            assert!(
+                started.elapsed() < Duration::from_secs(1),
+                "drew in {:?}",
+                started.elapsed()
+            );
+        }
+
+        #[test]
         fn tiny_main_views_never_panic() {
             let mut st = state(FILES);
             done(&mut st, 1, 200, b"x");
