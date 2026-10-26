@@ -97,3 +97,90 @@ fn visual_home_and_help() {
     let mut hint = App::new(SplashSetting::Off, tmux, vec![]);
     r.render(&app_frame(&mut hint, 80, 24), &out("home-tmux-hint"));
 }
+
+fn demo_state() -> pawsman_core::state::AppState {
+    use std::path::{Path, PathBuf};
+
+    let files = [
+        ("1-users.req.toml", "name = \"List users\"\nurl = \"http://127.0.0.1:8787/users\"\n\n[headers]\nAccept = \"application/json\"\n"),
+        ("2-echo.req.toml", "name = \"Create user\"\nmethod = \"POST\"\nurl = \"http://127.0.0.1:8787/echo\"\n\n[body]\ntext = \"{\\\"name\\\": \\\"Ada\\\"}\"\n"),
+        ("3-slow.req.toml", "name = \"Slow\"\nurl = \"http://127.0.0.1:8787/slow\"\n"),
+        ("4-delete.req.toml", "name = \"Delete user\"\nmethod = \"DELETE\"\nurl = \"http://127.0.0.1:8787/users/1\"\n"),
+        ("5-broken.req.toml", "name = "),
+    ]
+    .iter()
+    .map(|(n, t)| (PathBuf::from(format!("/demo/{n}")), (*t).to_owned()))
+    .collect();
+    pawsman_core::state::AppState::new(pawsman_model::Collection::from_files(
+        Path::new("/demo"),
+        Some("format = 1\nname = \"Demo\"\n"),
+        files,
+    ))
+}
+
+fn main_app(state: &mut pawsman_core::state::AppState, downs: usize) -> App {
+    let mut app = App::new(SplashSetting::Off, truecolor(), vec![]);
+    app.update(Msg::Snapshot(state.snapshot()), Duration::ZERO)
+        .unwrap();
+    for _ in 0..downs {
+        app.update(
+            Msg::Input(Input::Key(Chord::plain(KeyCode::Down))),
+            Duration::ZERO,
+        )
+        .unwrap();
+    }
+    app
+}
+
+#[test]
+#[ignore = "writes PNG files for the visual check"]
+fn visual_main_view() {
+    use std::time::Instant;
+
+    use pawsman_core::state::Event;
+    use pawsman_model::RequestId;
+    use pawsman_net::{NetError, NetEvent, Response};
+
+    let mut r = png::Renderer::new();
+    let mut st = demo_state();
+    let id = RequestId::new(1);
+    st.apply(Event::Send(id), Instant::now());
+    let body = br#"[{"id":1,"name":"Ada Lovelace"},{"id":2,"name":"Grace Hopper"}]"#;
+    let response = Response::for_tests(200, body, Duration::from_millis(42));
+    st.apply(Event::Net(NetEvent::Done { id, response }), Instant::now());
+    st.apply(Event::Send(RequestId::new(3)), Instant::now());
+    let failed = RequestId::new(4);
+    st.apply(Event::Send(failed), Instant::now());
+    let error = NetError::connect(
+        "127.0.0.1:8787",
+        &std::io::Error::other("connection refused"),
+    );
+    st.apply(
+        Event::Net(NetEvent::Failed { id: failed, error }),
+        Instant::now(),
+    );
+
+    let mut done = main_app(&mut st, 0);
+    r.render(&app_frame(&mut done, 160, 48), &out("main-160x48-done"));
+    r.render(&app_frame(&mut done, 100, 30), &out("main-100x30-done"));
+    let mut sending = main_app(&mut st, 2);
+    r.render(
+        &app_frame(&mut sending, 160, 48),
+        &out("main-160x48-sending"),
+    );
+    let mut fail = main_app(&mut st, 3);
+    r.render(&app_frame(&mut fail, 100, 30), &out("main-100x30-failed"));
+    let mut broken = main_app(&mut st, 4);
+    r.render(
+        &app_frame(&mut broken, 160, 48),
+        &out("main-160x48-invalid"),
+    );
+    let mut narrow = main_app(&mut st, 0);
+    narrow
+        .update(
+            Msg::Input(Input::Key(Chord::plain(KeyCode::BackTab))),
+            Duration::ZERO,
+        )
+        .unwrap();
+    r.render(&app_frame(&mut narrow, 60, 20), &out("main-60x20-response"));
+}

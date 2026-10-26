@@ -735,6 +735,27 @@ mod tests {
         }
 
         #[test]
+        fn long_body_lines_wrap_instead_of_being_cut() {
+            let mut st = state(FILES);
+            done(
+                &mut st,
+                1,
+                200,
+                br#"[{"id":1,"name":"Ada Lovelace"},{"id":2,"name":"Grace Hopper"}]"#,
+            );
+            let mut app = app_with(&mut st);
+            app.update(key(Chord::plain(KeyCode::BackTab)), Duration::ZERO)
+                .unwrap();
+
+            let text = screen(&render(&mut app, 40, 20, Duration::ZERO));
+
+            assert!(
+                text.contains("Hopper"),
+                "the end of the line is visible:\n{text}"
+            );
+        }
+
+        #[test]
         fn tiny_main_views_never_panic() {
             let mut st = state(FILES);
             done(&mut st, 1, 200, b"x");
