@@ -3,6 +3,7 @@
 use std::path::Path;
 
 use pawsman_model::{Collection, ModelError};
+use tracing::{info, warn};
 
 /// Loads the collection in `dir`: `pawsman.toml` and every `*.req.toml` directly in it.
 ///
@@ -11,7 +12,35 @@ use pawsman_model::{Collection, ModelError};
 /// `model::not_a_collection` when `dir` or its `pawsman.toml` is missing; `model::invalid_file`
 /// for a bad manifest. A request file that cannot be read or parsed becomes an error entry.
 pub fn load(dir: &Path) -> Result<Collection, ModelError> {
-    Collection::from_files(dir, None, Vec::new())
+    let manifest = std::fs::read_to_string(dir.join("pawsman.toml")).ok();
+    let mut files = Vec::new();
+    let mut unreadable = Vec::new();
+    if let Ok(read_dir) = std::fs::read_dir(dir) {
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            let is_request = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.ends_with(".req.toml"));
+            if !is_request || !path.is_file() {
+                continue;
+            }
+            match std::fs::read_to_string(&path) {
+                Ok(text) => files.push((path, text)),
+                Err(err) => unreadable.push(ModelError::unreadable(&path, &err)),
+            }
+        }
+    }
+    let collection = Collection::from_files(dir, manifest.as_deref(), files)?;
+    for err in &unreadable {
+        warn!(%err, "request file unreadable");
+    }
+    info!(
+        dir = %dir.display(),
+        requests = collection.entries().len(),
+        "collection loaded"
+    );
+    Ok(collection)
 }
 
 #[cfg(test)]
