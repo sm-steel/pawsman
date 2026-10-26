@@ -6,9 +6,13 @@ use std::os::unix::net::UnixStream;
 use std::sync::mpsc::Sender;
 use std::thread::JoinHandle;
 
+use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use signal_hook::SigId;
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM, SIGWINCH};
 
+use tracing::{debug, warn};
+
+use super::{Decoder, ESC_TIMEOUT, Input};
 use crate::app::Msg;
 
 /// The running input thread.
@@ -54,13 +58,84 @@ impl Reader {
 
 /// The thread body.
 pub(crate) fn run(
-    tty: impl Read + AsFd,
-    winch: UnixStream,
-    term: UnixStream,
+    mut tty: impl Read + AsFd,
+    mut winch: UnixStream,
+    mut term: UnixStream,
     stop: UnixStream,
     tx: Sender<Msg>,
 ) {
-    let _ = (tty, winch, term, stop, tx);
+    let mut decoder = Decoder::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        let timeout = decoder.has_pending().then(|| Timespec {
+            tv_sec: 0,
+            tv_nsec: i64::from(ESC_TIMEOUT.subsec_nanos()),
+        });
+        let ready = {
+            let mut fds = [
+                PollFd::new(&tty, PollFlags::IN),
+                PollFd::new(&winch, PollFlags::IN),
+                PollFd::new(&term, PollFlags::IN),
+                PollFd::new(&stop, PollFlags::IN),
+            ];
+            match poll(&mut fds, timeout.as_ref()) {
+                Ok(0) => None,
+                Ok(_) => Some(fds.map(|f| !f.revents().is_empty())),
+                Err(rustix::io::Errno::INTR) => continue,
+                Err(err) => {
+                    warn!(%err, "input poll");
+                    let _ = tx.send(Msg::InputClosed);
+                    return;
+                }
+            }
+        };
+        let Some([tty_ready, winch_ready, term_ready, stop_ready]) = ready else {
+            if !send_all(&tx, decoder.flush()) {
+                return;
+            }
+            continue;
+        };
+        if stop_ready {
+            debug!("input thread stopped");
+            return;
+        }
+        if term_ready {
+            drain(&mut term);
+            let _ = tx.send(Msg::Terminate);
+            return;
+        }
+        if winch_ready {
+            drain(&mut winch);
+            if tx.send(Msg::Resize).is_err() {
+                return;
+            }
+        }
+        if tty_ready {
+            match tty.read(&mut buf) {
+                Ok(0) | Err(_) => {
+                    let _ = tx.send(Msg::InputClosed);
+                    return;
+                }
+                Ok(n) => {
+                    if !send_all(&tx, decoder.feed(buf.get(..n).unwrap_or_default())) {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Sends every input; false once the loop has gone.
+fn send_all(tx: &Sender<Msg>, inputs: Vec<Input>) -> bool {
+    inputs
+        .into_iter()
+        .all(|input| tx.send(Msg::Input(input)).is_ok())
+}
+
+fn drain(pipe: &mut UnixStream) {
+    let mut sink = [0u8; 64];
+    let _ = pipe.read(&mut sink);
 }
 
 #[cfg(test)]
