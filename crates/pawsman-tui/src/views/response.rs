@@ -7,7 +7,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Paragraph, Wrap};
 
 use super::main::MainView;
 
@@ -107,7 +107,12 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, view: &MainView<'_>) {
         }
         _ => {}
     }
-    frame.render_widget(Paragraph::new(lines).scroll((view.scroll, 0)), area);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .scroll((view.scroll, 0)),
+        area,
+    );
 }
 
 #[cfg(test)]
