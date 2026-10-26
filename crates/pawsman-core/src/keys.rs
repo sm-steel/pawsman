@@ -203,6 +203,28 @@ mod tests {
     }
 
     #[test]
+    fn every_binding_has_keys_and_a_hint() {
+        for binding in table() {
+            assert!(
+                !binding.chords().is_empty(),
+                "{:?} has keys",
+                binding.action()
+            );
+            assert!(
+                !binding.hint().is_empty(),
+                "{:?} has a hint",
+                binding.action()
+            );
+        }
+        assert!(
+            table()
+                .iter()
+                .any(|b| b.action() == Action::Quit && b.hint() == "quit"),
+            "quit is in the table"
+        );
+    }
+
+    #[test]
     fn every_context_can_quit() {
         for context in [Context::Splash, Context::Home, Context::Help] {
             assert_eq!(

@@ -170,3 +170,39 @@ impl fmt::Display for Chord {
         f.write_str(name)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_bits_drops_caps_and_num_lock() {
+        assert_eq!(
+            Mods::from_bits(64 | 128 | 4),
+            Mods::CTRL,
+            "lock bits masked"
+        );
+        assert_eq!(
+            Mods::from_bits(0b11_1111),
+            Mods::from_bits(63),
+            "all six kept"
+        );
+        assert!(
+            Mods::from_bits(64).is_empty(),
+            "caps lock alone is no modifier"
+        );
+    }
+
+    #[test]
+    fn union_and_contains() {
+        let both = Mods::CTRL | Mods::SHIFT;
+
+        assert!(
+            both.contains(Mods::CTRL) && both.contains(Mods::SHIFT),
+            "both set"
+        );
+        assert!(!both.contains(Mods::ALT), "alt not set");
+        assert_eq!(Mods::CTRL | Mods::CTRL, Mods::CTRL, "idempotent");
+        assert!(Mods::NONE.is_empty() && !Mods::ALT.is_empty(), "is_empty");
+    }
+}

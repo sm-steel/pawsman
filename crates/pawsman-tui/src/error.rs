@@ -102,3 +102,53 @@ impl ErrorInfo for TuiError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error as _;
+
+    use super::*;
+
+    fn io() -> io::Error {
+        io::Error::other("boom")
+    }
+
+    #[test]
+    fn messages_and_sources() {
+        let cases = [
+            (
+                TuiError::no_tty(io()),
+                "cannot open the terminal device: boom",
+            ),
+            (
+                TuiError::terminal_mode(Mode::AltScreen, io()),
+                "terminal refused alternate screen mode: boom",
+            ),
+            (TuiError::terminal_io(io()), "terminal write: boom"),
+            (TuiError::input_closed(), "input reader stopped"),
+        ];
+
+        for (err, text) in &cases {
+            assert_eq!(err.to_string(), *text, "message");
+        }
+        let with_source = cases.iter().filter(|(e, _)| e.source().is_some()).count();
+        assert_eq!(with_source, 3, "the I/O errors carry their cause");
+    }
+
+    #[test]
+    fn help_where_there_is_something_to_do() {
+        let tty = TuiError::no_tty(io());
+        let mode = TuiError::terminal_mode(Mode::Raw, io());
+
+        assert_eq!(
+            tty.help().as_deref(),
+            Some("Run pawsman in a terminal; over SSH use `ssh -t`."),
+            "no tty"
+        );
+        assert!(
+            mode.help().is_some_and(|h| h.ends_with('.')),
+            "refused mode"
+        );
+        assert!(TuiError::input_closed().help().is_none(), "nothing to do");
+    }
+}

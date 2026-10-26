@@ -64,3 +64,41 @@ impl ErrorInfo for CoreError {
         }))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+
+    fn errors() -> Vec<CoreError> {
+        vec![
+            CoreError::no_home(),
+            CoreError::settings_invalid(Path::new("/x/settings.toml"), "unknown field `y`"),
+        ]
+    }
+
+    #[test]
+    fn help_is_one_imperative_sentence() {
+        for err in errors() {
+            let help = err.help().expect("every core error has help");
+            assert!(help.ends_with('.'), "ends with a period: {help}");
+            assert!(
+                help.starts_with(char::is_uppercase),
+                "starts with a verb: {help}"
+            );
+        }
+    }
+
+    #[test]
+    fn messages_name_the_input() {
+        let [home, settings] = errors().try_into().unwrap();
+
+        assert!(home.to_string().contains("`HOME`"), "{home}");
+        assert_eq!(
+            settings.to_string(),
+            "`/x/settings.toml` is not valid: unknown field `y`",
+            "file and reason"
+        );
+    }
+}

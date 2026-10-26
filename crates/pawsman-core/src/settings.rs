@@ -177,6 +177,19 @@ mod tests {
     }
 
     #[test]
+    fn an_unreadable_file_is_settings_invalid() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let err = Settings::load(dir.path()).unwrap_err();
+
+        assert_eq!(
+            err.code(),
+            crate::codes::SETTINGS_INVALID,
+            "a directory is not a file"
+        );
+    }
+
+    #[test]
     fn ui_values_are_read() {
         let file = write("[ui]\nanimations = false\nimages = \"blocks\"\n");
 
