@@ -8,6 +8,8 @@ mod tmux;
 use std::fs::{File, OpenOptions};
 use std::io::Write as _;
 use std::os::fd::AsFd as _;
+use std::os::unix::ffi::OsStringExt as _;
+use std::path::PathBuf;
 
 pub use caps::{Caps, CapsHint, CellPx, ColorDepth, Graphics, KeyboardProtocol, OverSsh};
 use modes::{Mode, Stack};
@@ -33,7 +35,7 @@ impl Term {
         let tty = OpenOptions::new()
             .read(true)
             .write(true)
-            .open("/dev/tty")
+            .open(device_path())
             .map_err(TuiError::no_tty)?;
         let saved = tcgetattr(&tty).map_err(|e| TuiError::terminal_mode(Mode::Raw, e.into()))?;
         let fd = tty.as_fd().try_clone_to_owned().map_err(TuiError::no_tty)?;
@@ -124,6 +126,24 @@ impl Term {
     pub fn restore(&mut self) {
         modes::restore();
     }
+}
+
+/// The terminal device: the real name of the first standard stream that is a terminal, else
+/// `/dev/tty`. macOS cannot `poll` the `/dev/tty` alias, only the device behind it.
+fn device_path() -> PathBuf {
+    let stdin = std::io::stdin();
+    [
+        stdin.as_fd(),
+        rustix::stdio::stdout(),
+        rustix::stdio::stderr(),
+    ]
+    .into_iter()
+    .filter(|fd| rustix::termios::isatty(fd))
+    .find_map(|fd| rustix::termios::ttyname(fd, Vec::new()).ok())
+    .map_or_else(
+        || PathBuf::from("/dev/tty"),
+        |name| PathBuf::from(std::ffi::OsString::from_vec(name.into_bytes())),
+    )
 }
 
 impl Drop for Term {

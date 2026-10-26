@@ -59,7 +59,7 @@ impl TuiError {
 impl fmt::Display for TuiError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.kind {
-            Kind::NoTty(err) => write!(f, "cannot open `/dev/tty`: {err}"),
+            Kind::NoTty(err) => write!(f, "cannot open the terminal device: {err}"),
             Kind::TerminalMode { mode, source } => {
                 write!(f, "terminal refused {mode} mode: {source}")
             }
