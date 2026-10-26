@@ -1,0 +1,28 @@
+---
+source: crates/pawsman-tui/src/app.rs
+expression: terminal.backend()
+---
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                   █ █   █▀▀█ █▀▀█ █   █ █▀▀▀ █▀▄▀█ █▀▀█ █▀▀▄                   "
+"                  █ ▄ █  █▄▄█ █▄▄█ █ █ █ ▀▀▀█ █ ▀ █ █▄▄█ █  █                   "
+"                   ███   █    █  █ ▀▄▀▄▀ ▄▄▄█ █   █ █  █ █  █                   "
+"                                                                                "
+"                               no collection open                               "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"Ctrl-Q quit · F1 help                                                           "

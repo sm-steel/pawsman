@@ -69,16 +69,12 @@ pub(crate) struct App {
 
 impl App {
     pub(crate) fn new(splash: SplashSetting, caps: Caps, notices: Vec<Notice>) -> Self {
-        let _ = (
-            splash,
-            Splash::new,
-            splash::fits,
-            home::draw,
-            help::draw,
-            keys::lookup,
-        );
+        let screen = match splash {
+            SplashSetting::On => Screen::Splash(Splash::new(splash_seed(), caps.color())),
+            SplashSetting::Off => Screen::Home,
+        };
         Self {
-            screen: Screen::Home,
+            screen,
             overlay: Overlay::None,
             caps,
             notices: notices.into(),
@@ -86,33 +82,105 @@ impl App {
         }
     }
 
-    pub(crate) fn update(&mut self, msg: Msg, now: Duration) -> Result<Flow, TuiError> {
-        let _ = (
-            msg,
-            now,
-            Action::Quit,
-            Context::Home,
-            TuiError::input_closed,
-        );
+    fn context(&self) -> Context {
+        match (&self.screen, self.overlay) {
+            (Screen::Splash(_), _) => Context::Splash,
+            (Screen::Home, Overlay::Help) => Context::Help,
+            (Screen::Home, Overlay::None) => Context::Home,
+        }
+    }
+
+    /// Applies one message.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "messages hand over owned data (pasted text now, engine snapshots from 1.2)"
+    )]
+    pub(crate) fn update(&mut self, msg: Msg, _now: Duration) -> Result<Flow, TuiError> {
+        let chord = match msg {
+            Msg::Terminate => return Ok(Flow::Quit),
+            Msg::InputClosed => return Err(TuiError::input_closed()),
+            Msg::Input(Input::Key(chord)) => chord,
+            Msg::Resize | Msg::Input(_) => return Ok(Flow::Continue),
+        };
+        let action = keys::lookup(self.context(), chord);
+        if matches!(self.screen, Screen::Splash(_)) && action != Some(Action::Quit) {
+            self.screen = Screen::Home;
+            return Ok(Flow::Continue);
+        }
+        match action {
+            Some(Action::Quit) => return Ok(Flow::Quit),
+            Some(Action::Help) => self.overlay = Overlay::Help,
+            Some(Action::Close) => self.overlay = Overlay::None,
+            Some(Action::Copy) => self.notices.push_back(Notice::info(format!(
+                "nothing selected · {} quits",
+                quit_label()
+            ))),
+            None if !chord.mods().is_empty() => tracing::debug!(%chord, "unbound key"),
+            Some(_) | None => {}
+        }
         Ok(Flow::Continue)
     }
 
+    /// Draws the current screen; a finished or too-small splash gives way to home first.
     pub(crate) fn draw(&mut self, frame: &mut Frame, now: Duration) {
-        let _ = (
+        let area = frame.area();
+        if let Screen::Splash(splash) = &mut self.screen {
+            if !splash.done(now) && splash::fits(area) {
+                splash.frame(now, frame.buffer_mut(), area);
+                return;
+            }
+            self.screen = Screen::Home;
+        }
+        self.expire(now);
+        home::draw(
             frame,
-            now,
-            &self.screen,
-            self.overlay,
-            &self.caps,
-            &self.notices,
-            &self.shown,
+            area,
+            self.shown.as_ref().map(|(notice, _)| notice),
+            self.caps.hint(),
         );
+        if self.overlay == Overlay::Help {
+            help::draw(frame, area);
+        }
     }
 
-    pub(crate) fn next_tick(&self, now: Duration) -> Option<Duration> {
-        let _ = now;
-        None
+    fn expire(&mut self, now: Duration) {
+        if self.shown.as_ref().is_some_and(|(_, until)| now >= *until) {
+            self.shown = None;
+        }
+        if self.shown.is_none()
+            && let Some(next) = self.notices.pop_front()
+        {
+            self.shown = Some((next, now + NOTICE_FOR));
+        }
     }
+
+    /// How long the loop may block before the next draw; `None` blocks until input.
+    pub(crate) fn next_tick(&self, now: Duration) -> Option<Duration> {
+        match &self.screen {
+            Screen::Splash(splash) => splash.next_tick(now).or(Some(Duration::ZERO)),
+            Screen::Home => match (&self.shown, self.notices.is_empty()) {
+                (Some((_, until)), _) => Some(until.saturating_sub(now)),
+                (None, false) => Some(Duration::ZERO),
+                (None, true) => None,
+            },
+        }
+    }
+}
+
+/// The label of the first quit key, for hints.
+fn quit_label() -> String {
+    keys::table()
+        .iter()
+        .find(|b| b.action() == Action::Quit)
+        .and_then(|b| b.chords().first())
+        .map_or_else(|| "Ctrl-Q".to_owned(), ToString::to_string)
+}
+
+/// The splash's coalesce pattern changes from run to run.
+fn splash_seed() -> u32 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(42, |d| d.subsec_nanos())
 }
 
 #[cfg(test)]

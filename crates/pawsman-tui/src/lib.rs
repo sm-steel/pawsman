@@ -8,4 +8,5 @@ pub mod input;
 pub mod term;
 mod views;
 
+pub use app::SplashSetting;
 pub use error::TuiError;

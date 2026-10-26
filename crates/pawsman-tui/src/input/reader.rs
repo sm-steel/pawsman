@@ -56,7 +56,11 @@ impl Reader {
     }
 }
 
-/// The thread body.
+/// The thread body. It owns the sender, so the loop sees the channel close when the thread ends.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the thread owns its stop pipe and sender; dropping the sender tells the loop it ended"
+)]
 pub(crate) fn run(
     mut tty: impl Read + AsFd,
     mut winch: UnixStream,
