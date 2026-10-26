@@ -1,0 +1,30 @@
+[package]
+name = "pawsman-tui"
+description = "pawsman terminal UI: terminal ownership, probe, input, views"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+pawsman-core.workspace = true
+pawsman-error.workspace = true
+crossterm.workspace = true
+ratatui.workspace = true
+rustix.workspace = true
+signal-hook.workspace = true
+tachyonfx.workspace = true
+tracing.workspace = true
+unicode-segmentation.workspace = true
+unicode-width.workspace = true
+
+[dev-dependencies]
+fontdue.workspace = true
+image.workspace = true
+insta.workspace = true
+pawsman-test-support.workspace = true
+rstest.workspace = true
+
+[lints]
+workspace = true

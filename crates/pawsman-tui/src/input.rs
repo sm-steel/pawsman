@@ -1,0 +1,14 @@
+//! Keyboard, mouse, paste and focus input, decoded by pawsman itself from `/dev/tty`.
+
+mod decoder;
+
+use std::time::Duration;
+
+pub use decoder::{Button, Decoder, Input, Mouse, MouseKind};
+
+/// How long a lone `ESC` waits for the rest of a sequence before it counts as the Esc key.
+pub const ESC_TIMEOUT: Duration = Duration::from_millis(25);
+/// The longest escape sequence or string kept; a longer one is dropped.
+pub const MAX_SEQUENCE: usize = 64 * 1024;
+/// The largest paste kept; the rest of a longer paste is dropped.
+pub const MAX_PASTE: usize = 8 * 1024 * 1024;
