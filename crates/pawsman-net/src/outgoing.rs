@@ -31,7 +31,10 @@ impl Outgoing {
         let bad_url = || NetError::invalid_request("url", url);
         let uri: Uri = url.parse().map_err(|_| bad_url())?;
         let scheme_ok = matches!(uri.scheme_str(), Some("http" | "https"));
-        if !scheme_ok || uri.host().is_none_or(str::is_empty) {
+        // Credentials in the URL would land in the Host header and in access logs; auth comes
+        // with M3.
+        let userinfo = uri.authority().is_some_and(|a| a.as_str().contains('@'));
+        if !scheme_ok || userinfo || uri.host().is_none_or(str::is_empty) {
             return Err(bad_url());
         }
         let mut map = HeaderMap::new();
@@ -50,10 +53,13 @@ impl Outgoing {
         })
     }
 
-    /// The host, for logs.
+    /// The host without IPv6 brackets, for resolving, TLS and logs.
     #[must_use]
     pub fn host(&self) -> &str {
-        self.uri.host().unwrap_or("")
+        let host = self.uri.host().unwrap_or("");
+        host.strip_prefix('[')
+            .and_then(|h| h.strip_suffix(']'))
+            .unwrap_or(host)
     }
 
     /// The path without the query, for logs.

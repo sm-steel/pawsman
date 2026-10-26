@@ -135,14 +135,31 @@ fn build(outgoing: &Outgoing) -> Result<http::Request<Full<Bytes>>, NetError> {
     let path = uri
         .path_and_query()
         .map_or("/", http::uri::PathAndQuery::as_str);
-    let authority = uri.authority().map_or("", http::uri::Authority::as_str);
+    let host = uri.host().unwrap_or("");
+    let host = match uri.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host.to_owned(),
+    };
+    let headers = outgoing.headers();
     let mut request = http::Request::builder()
         .method(outgoing.method().clone())
         .uri(path);
-    if !outgoing.headers().contains_key(http::header::HOST) {
-        request = request.header(http::header::HOST, authority);
+    if !headers.contains_key(http::header::HOST) {
+        request = request.header(http::header::HOST, host);
     }
-    for (name, value) in outgoing.headers() {
+    // hyper sends a bodiless POST with no length at all; strict servers answer 411.
+    let wants_length = matches!(
+        *outgoing.method(),
+        http::Method::POST | http::Method::PUT | http::Method::PATCH
+    );
+    if wants_length
+        && outgoing.body().is_empty()
+        && !headers.contains_key(http::header::CONTENT_LENGTH)
+        && !headers.contains_key(http::header::TRANSFER_ENCODING)
+    {
+        request = request.header(http::header::CONTENT_LENGTH, "0");
+    }
+    for (name, value) in headers {
         request = request.header(name, value);
     }
     request

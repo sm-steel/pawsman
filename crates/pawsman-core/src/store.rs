@@ -10,7 +10,8 @@ use tracing::{info, warn};
 /// # Errors
 ///
 /// `model::not_a_collection` when `dir` or its `pawsman.toml` is missing; `model::invalid_file`
-/// for a bad manifest. A request file that cannot be read or parsed becomes an error entry.
+/// for a bad manifest. A request file that does not parse becomes an error entry; one that cannot
+/// be read is logged and skipped.
 pub fn load(dir: &Path) -> Result<Collection, ModelError> {
     let manifest = std::fs::read_to_string(dir.join("pawsman.toml")).ok();
     let mut files = Vec::new();
