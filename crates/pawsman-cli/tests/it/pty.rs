@@ -1,4 +1,11 @@
 //! A PTY session around the `pawsman` binary, with canned probe replies and a vt100 screen.
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "test harness: rust rule 1 applies outside tests only"
+)]
 
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
@@ -95,7 +102,7 @@ impl Session {
                 sink.lock().unwrap().extend_from_slice(&buf[..n]);
             }
         });
-        let mut session = Self {
+        let session = Self {
             pty,
             child,
             output,
@@ -149,7 +156,7 @@ impl Session {
         }
     }
 
-    pub(crate) fn write(&mut self, bytes: &[u8]) {
+    pub(crate) fn write(&self, bytes: &[u8]) {
         (&*self.pty).write_all(bytes).unwrap();
     }
 
