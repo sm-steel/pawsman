@@ -12,6 +12,8 @@ use ratatui::widgets::{Paragraph, Wrap};
 use super::main::MainView;
 
 const DIM: Color = Color::Rgb(110, 110, 135);
+/// How much of a body the raw view draws; the viewer in piece 1.6 scrolls through all of it.
+const SHOWN: usize = 256 * 1024;
 
 /// Text safe to put in cells: CRLF becomes LF, tabs become spaces, other control characters
 /// become `�`, so a body can never move the cursor or change modes.
@@ -82,8 +84,19 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, view: &MainView<'_>) {
                     .fg(status_color(r.status()))
                     .add_modifier(Modifier::BOLD),
             ));
+            let preview = r.body().preview();
+            let shown = preview.get(..SHOWN).unwrap_or(preview);
+            if shown.len() < preview.len() {
+                lines.push(Line::styled(
+                    format!(
+                        "showing the first {}",
+                        size(u64::try_from(SHOWN).unwrap_or(0))
+                    ),
+                    Style::new().fg(DIM),
+                ));
+            }
             lines.push(Line::default());
-            let text = sanitize(&String::from_utf8_lossy(r.body().preview()));
+            let text = sanitize(&String::from_utf8_lossy(shown));
             lines.extend(text.lines().map(|l| Line::raw(l.to_owned())));
             if let Body::Spilled { len, head, .. } = r.body() {
                 let rest = len.saturating_sub(u64::try_from(head.len()).unwrap_or(0));
