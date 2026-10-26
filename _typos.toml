@@ -1,3 +1,4 @@
 # Crate names that typos' dictionary corrects.
 [default.extend-words]
 ratatui = "ratatui"
+flate = "flate"
