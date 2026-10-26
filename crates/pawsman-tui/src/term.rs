@@ -1,6 +1,7 @@
 //! Terminal ownership: modes, the capability probe and capabilities.
 
 mod caps;
+pub(crate) mod modes;
 pub mod probe;
 mod tmux;
 
