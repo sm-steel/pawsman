@@ -484,6 +484,24 @@ mod tests {
     }
 
     #[test]
+    fn real_kitty_typing_under_disambiguate_is_plain_text() {
+        // Recorded in kitty 0.49.2 with `CSI > 1 u` pushed: Shift+a, Shift+1, Shift+; on a Russian
+        // layout, Enter.
+        let recorded = b"A!\xd0\x96\r";
+
+        assert_eq!(
+            keys(recorded),
+            vec![
+                key(KeyCode::Char('A'), Mods::NONE),
+                key(KeyCode::Char('!'), Mods::NONE),
+                key(KeyCode::Char('\u{416}'), Mods::NONE),
+                key(KeyCode::Enter, Mods::NONE),
+            ],
+            "shifted text arrives as text, without SHIFT"
+        );
+    }
+
+    #[test]
     fn kitty_release_events_are_dropped() {
         assert_eq!(keys(b"\x1b[113;5:3u"), vec![], "release");
     }
