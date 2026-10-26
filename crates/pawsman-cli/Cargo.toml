@@ -21,6 +21,7 @@ tracing-appender.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
+pawsman-test-support.workspace = true
 pty-process.workspace = true
 rustix.workspace = true
 tempfile.workspace = true

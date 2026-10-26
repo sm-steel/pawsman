@@ -3,3 +3,4 @@
 mod lifecycle;
 mod probe_paths;
 mod pty;
+mod requests;
