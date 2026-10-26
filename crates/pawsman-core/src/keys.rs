@@ -93,9 +93,72 @@ impl Binding {
     }
 }
 
-const ALL: &[Context] = &[Context::Splash, Context::Home, Context::Help];
+const ALL: &[Context] = &[Context::Splash, Context::Home, Context::Main, Context::Help];
 
 static TABLE: &[Binding] = &[
+    Binding {
+        action: Action::Send,
+        chords: &[
+            Chord::plain(KeyCode::F(5)),
+            Chord::new(KeyCode::Enter, Mods::CTRL),
+            Chord::new(KeyCode::Enter, Mods::ALT),
+        ],
+        contexts: &[Context::Main],
+        hint: "send",
+        shown: Shown::Bar,
+    },
+    Binding {
+        action: Action::NextPane,
+        chords: &[Chord::plain(KeyCode::Tab)],
+        contexts: &[Context::Main],
+        hint: "pane",
+        shown: Shown::Bar,
+    },
+    Binding {
+        action: Action::Cancel,
+        chords: &[Chord::plain(KeyCode::Esc)],
+        contexts: &[Context::Main],
+        hint: "cancel",
+        shown: Shown::Bar,
+    },
+    Binding {
+        action: Action::PrevPane,
+        chords: &[Chord::plain(KeyCode::BackTab)],
+        contexts: &[Context::Main],
+        hint: "previous pane",
+        shown: Shown::HelpOnly,
+    },
+    Binding {
+        action: Action::Up,
+        chords: &[Chord::plain(KeyCode::Up), Chord::plain(KeyCode::Char('k'))],
+        contexts: &[Context::Main],
+        hint: "up",
+        shown: Shown::HelpOnly,
+    },
+    Binding {
+        action: Action::Down,
+        chords: &[
+            Chord::plain(KeyCode::Down),
+            Chord::plain(KeyCode::Char('j')),
+        ],
+        contexts: &[Context::Main],
+        hint: "down",
+        shown: Shown::HelpOnly,
+    },
+    Binding {
+        action: Action::PageUp,
+        chords: &[Chord::plain(KeyCode::PageUp)],
+        contexts: &[Context::Main],
+        hint: "page up",
+        shown: Shown::HelpOnly,
+    },
+    Binding {
+        action: Action::PageDown,
+        chords: &[Chord::plain(KeyCode::PageDown)],
+        contexts: &[Context::Main],
+        hint: "page down",
+        shown: Shown::HelpOnly,
+    },
     Binding {
         action: Action::Quit,
         chords: &[Chord::ctrl('q')],
@@ -106,7 +169,7 @@ static TABLE: &[Binding] = &[
     Binding {
         action: Action::Help,
         chords: &[Chord::plain(KeyCode::F(1))],
-        contexts: &[Context::Home],
+        contexts: &[Context::Home, Context::Main],
         hint: "help",
         shown: Shown::Bar,
     },
@@ -120,7 +183,7 @@ static TABLE: &[Binding] = &[
     Binding {
         action: Action::Copy,
         chords: &[Chord::ctrl('c')],
-        contexts: &[Context::Home],
+        contexts: &[Context::Home, Context::Main],
         hint: "copy the selection",
         shown: Shown::HelpOnly,
     },
@@ -205,6 +268,7 @@ mod tests {
     #[case(Chord::plain(KeyCode::Esc), "Esc")]
     #[case(Chord::new(KeyCode::Enter, Mods::ALT), "Alt-Enter")]
     #[case(Chord::new(KeyCode::Char('k'), Mods::CTRL | Mods::SHIFT), "Ctrl-Shift-K")]
+    #[case(Chord::plain(KeyCode::Char('k')), "k")]
     fn chords_display_like_the_docs(#[case] chord: Chord, #[case] expected: &str) {
         assert_eq!(chord.to_string(), expected, "label");
     }
