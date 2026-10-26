@@ -23,13 +23,12 @@ pub struct Term {
 }
 
 impl Term {
-    /// Opens `/dev/tty` and enters raw mode, the alternate screen and a hidden cursor; installs the
-    /// panic hook. Any failure undoes what was done.
+    /// Opens `/dev/tty`, enters raw mode and installs the panic hook; the probe comes next, then
+    /// [`enter_screen`](Self::enter_screen).
     ///
     /// # Errors
     ///
-    /// `tui::no_tty` when there is no terminal; `tui::terminal_mode` when raw mode or the alternate
-    /// screen cannot be set.
+    /// `tui::no_tty` when there is no terminal; `tui::terminal_mode` when raw mode cannot be set.
     pub fn open() -> Result<Self, TuiError> {
         let tty = OpenOptions::new()
             .read(true)
@@ -46,14 +45,24 @@ impl Term {
         tcsetattr(&tty, OptionalActions::Now, &raw)
             .map_err(|e| TuiError::terminal_mode(Mode::Raw, e.into()))?;
         modes::push(Mode::Raw);
-        let mut term = Self { tty };
+        Ok(Self { tty })
+    }
+
+    /// Enters the alternate screen and hides the cursor. Runs after the probe: inside tmux the
+    /// passthrough replies did not arrive when the probe followed the alternate-screen switch.
+    ///
+    /// # Errors
+    ///
+    /// `tui::terminal_mode` when the alternate screen cannot be set; the modes already set are
+    /// undone first.
+    pub fn enter_screen(&mut self) -> Result<(), TuiError> {
         for mode in [Mode::AltScreen, Mode::HiddenCursor] {
-            if let Err(err) = term.enable(mode) {
+            if let Err(err) = self.enable(mode) {
                 modes::restore();
                 return Err(err);
             }
         }
-        Ok(term)
+        Ok(())
     }
 
     fn enable(&mut self, mode: Mode) -> Result<(), TuiError> {

@@ -180,6 +180,8 @@ impl App {
 pub fn run(options: Options) -> Result<(), TuiError> {
     let mut term = Term::open()?;
     let probed = term.probe(InTmux::from_env(options.env()))?;
+    tracing::debug!(replies = %probed.bytes.escape_ascii(), "probe replies");
+    term.enter_screen()?;
     let caps = Caps::resolve(
         &probe::parse(&probed.bytes),
         options.env(),
