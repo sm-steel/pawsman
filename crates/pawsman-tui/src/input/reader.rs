@@ -12,7 +12,7 @@ use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM, SIGWINCH};
 
 use tracing::{debug, warn};
 
-use super::{Decoder, ESC_TIMEOUT, Input};
+use super::{Decoder, Input};
 use crate::app::Msg;
 
 /// The running input thread.
@@ -71,9 +71,12 @@ pub(crate) fn run(
     let mut decoder = Decoder::new();
     let mut buf = [0u8; 4096];
     loop {
-        let timeout = decoder.has_pending().then(|| Timespec {
-            tv_sec: 0,
-            tv_nsec: i64::from(ESC_TIMEOUT.subsec_nanos()),
+        let timeout = decoder.has_pending().then(|| {
+            let silence = decoder.silence();
+            Timespec {
+                tv_sec: i64::try_from(silence.as_secs()).unwrap_or(i64::MAX),
+                tv_nsec: i64::from(silence.subsec_nanos()),
+            }
         });
         let ready = {
             let mut fds = [

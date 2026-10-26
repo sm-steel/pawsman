@@ -160,15 +160,22 @@ impl Decoder {
     /// How long a silence ends what is pending: `PASTE_TIMEOUT` inside a paste, else `ESC_TIMEOUT`.
     #[must_use]
     pub fn silence(&self) -> std::time::Duration {
-        let _ = PASTE_TIMEOUT;
-        ESC_TIMEOUT
+        if self.paste.is_some() {
+            PASTE_TIMEOUT
+        } else {
+            ESC_TIMEOUT
+        }
     }
 
     /// Ends whatever is pending after `ESC_TIMEOUT` of silence: a lone `ESC` is the Esc key, any
-    /// other incomplete sequence is dropped. An open paste stays open.
+    /// other incomplete sequence is dropped. A paste still open after `PASTE_TIMEOUT` ends with what
+    /// arrived, so a lost end marker never swallows later keys.
     pub fn flush(&mut self) -> Vec<Input> {
-        if self.paste.is_some() {
-            return Vec::new();
+        if let Some(mut bytes) = self.paste.take() {
+            let room = MAX_PASTE.saturating_sub(bytes.len());
+            bytes.extend(self.pending.drain(..).take(room));
+            debug!(bytes = bytes.len(), "closed a paste without its end marker");
+            return vec![Input::Paste(String::from_utf8_lossy(&bytes).into_owned())];
         }
         let lone_esc = self.pending == [ESC];
         self.pending.clear();
