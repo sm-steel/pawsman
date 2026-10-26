@@ -137,7 +137,36 @@ impl Chord {
 
 impl fmt::Display for Chord {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let _ = f;
-        Ok(())
+        for (bit, name) in [
+            (Mods::CTRL, "Ctrl-"),
+            (Mods::ALT, "Alt-"),
+            (Mods::SHIFT, "Shift-"),
+            (Mods::SUPER, "Super-"),
+        ] {
+            if self.mods.contains(bit) {
+                f.write_str(name)?;
+            }
+        }
+        let name = match self.code {
+            KeyCode::Char(' ') => "Space",
+            KeyCode::Char(c) => return write!(f, "{}", c.to_uppercase()),
+            KeyCode::F(n) => return write!(f, "F{n}"),
+            KeyCode::Enter => "Enter",
+            KeyCode::Esc => "Esc",
+            KeyCode::Tab => "Tab",
+            KeyCode::BackTab => "Shift-Tab",
+            KeyCode::Backspace => "Backspace",
+            KeyCode::Up => "Up",
+            KeyCode::Down => "Down",
+            KeyCode::Left => "Left",
+            KeyCode::Right => "Right",
+            KeyCode::Home => "Home",
+            KeyCode::End => "End",
+            KeyCode::PageUp => "PgUp",
+            KeyCode::PageDown => "PgDn",
+            KeyCode::Insert => "Ins",
+            KeyCode::Delete => "Del",
+        };
+        f.write_str(name)
     }
 }

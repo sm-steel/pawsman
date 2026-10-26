@@ -117,15 +117,26 @@ pub fn table() -> &'static [Binding] {
 /// The action bound to `chord` in `context`, with layout folding.
 #[must_use]
 pub fn lookup(context: Context, chord: Chord) -> Option<Action> {
-    let _ = (context, chord);
-    None
+    let folded = match chord.code() {
+        KeyCode::Char(c) => Chord::new(KeyCode::Char(fold(c)), chord.mods()),
+        _ => chord,
+    };
+    TABLE
+        .iter()
+        .find(|b| {
+            b.contexts.contains(&context) && b.chords.iter().any(|c| *c == chord || *c == folded)
+        })
+        .map(Binding::action)
 }
 
 /// `(key label, hint)` pairs for the hint bar in `context`.
 #[must_use]
 pub fn hints(context: Context) -> Vec<(String, &'static str)> {
-    let _ = context;
-    Vec::new()
+    TABLE
+        .iter()
+        .filter(|b| b.in_bar() && b.contexts.contains(&context))
+        .filter_map(|b| Some((b.chords.first()?.to_string(), b.hint)))
+        .collect()
 }
 
 #[cfg(test)]
