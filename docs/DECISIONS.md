@@ -31,3 +31,8 @@ One line per non-obvious decision.
 - **XDG paths from the env snapshot on Linux and macOS** — one layout, no directories crate (→ [M1 spec](superpowers/specs/2026-10-26-m1-http-client-design.md#cross-cutting-decisions)).
 - **tmux UTF-8 judged from the locale** — pawsman cannot spawn `tmux` to ask; `--images` overrides (→ [M1 spec](superpowers/specs/2026-10-26-m1-http-client-design.md#cross-cutting-decisions)).
 - **typos learns `flate`** — it splits the crate name `flate2` and corrects the stem (`_typos.toml`).
+- **Raw mode through `rustix::termios`** — the saved termios is restored exactly, by the same stack that undoes the escape-sequence modes (→ [M1.1 plan](superpowers/plans/2026-10-26-m1-1-binary-terminal-splash.md)).
+- **pty-process and fontdue over portable-pty and ab_glyph** — the rejected crates have no release within a year (→ [rules §1](../rules/rust-project.md#1-working-agreement)).
+- **Layout folding in 1.1** — under the kitty protocol Ctrl-Q on a Russian layout arrives as Ctrl-й and must still quit (→ [rules/tui.md §5](../rules/tui.md)).
+- **16-colour splash holds the final frame for 1.2 s** — with a stepped four-colour logo, since nearest-colour mapping turns the pastel gradient white.
+- **No `Terminal::clear`** — ratatui's clear asks for the cursor position and crossterm reads the reply from the tty itself, racing the input thread.
