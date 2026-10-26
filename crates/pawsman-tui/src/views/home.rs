@@ -58,16 +58,8 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, notice: Option<&Notice>, caps:
     if let Some(notice) = notice
         && area.height >= 2
     {
-        let style = match notice.level() {
-            Level::Warn => Style::new().fg(Color::Yellow),
-            Level::Error => Style::new().fg(Color::LightRed),
-            _ => Style::new().fg(DIM),
-        };
         let row = Rect::new(area.x, area.bottom() - 2, area.width, 1);
-        frame.render_widget(
-            Paragraph::new(Span::styled(notice.text().to_owned(), style)),
-            row,
-        );
+        frame.render_widget(notice_line(notice), row);
     }
     let mut bar = hints::line(Context::Home);
     if let Some(hint) = hint {
@@ -76,6 +68,16 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, notice: Option<&Notice>, caps:
     }
     let row = Rect::new(area.x, area.bottom() - 1, area.width, 1);
     frame.render_widget(Paragraph::new(bar).style(Style::new().fg(DIM)), row);
+}
+
+/// A notice as one line, coloured by its level.
+pub(crate) fn notice_line(notice: &Notice) -> Paragraph<'static> {
+    let style = match notice.level() {
+        Level::Warn => Style::new().fg(Color::Yellow),
+        Level::Error => Style::new().fg(Color::LightRed),
+        _ => Style::new().fg(DIM),
+    };
+    Paragraph::new(Span::styled(notice.text().to_owned(), style))
 }
 
 /// One centred line at row `y`, clipped to `area`.

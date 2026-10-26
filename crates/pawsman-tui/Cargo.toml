@@ -10,6 +10,8 @@ publish.workspace = true
 [dependencies]
 pawsman-core.workspace = true
 pawsman-error.workspace = true
+pawsman-model.workspace = true
+pawsman-net.workspace = true
 crossterm.workspace = true
 ratatui.workspace = true
 rustix.workspace = true
@@ -20,6 +22,7 @@ unicode-segmentation.workspace = true
 unicode-width.workspace = true
 
 [dev-dependencies]
+pawsman-net = { workspace = true, features = ["test-util"] }
 fontdue.workspace = true
 image.workspace = true
 insta.workspace = true

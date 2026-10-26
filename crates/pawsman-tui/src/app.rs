@@ -2,11 +2,14 @@
 
 use std::collections::VecDeque;
 use std::io::BufWriter;
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use pawsman_core::keys::{self, Action, Context};
 use pawsman_core::notice::Notice;
+use pawsman_core::state::Snapshot;
+use pawsman_model::RequestId;
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::{Frame, Terminal};
 
@@ -17,7 +20,7 @@ use crate::views::{colors, help, home};
 use crate::{Options, TuiError};
 
 /// Everything the main loop reacts to.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(crate) enum Msg {
     /// Decoded input.
     Input(Input),
@@ -27,6 +30,30 @@ pub(crate) enum Msg {
     Terminate,
     /// The input thread hit end of file or an error.
     InputClosed,
+    /// The engine published a new state.
+    Snapshot(Arc<Snapshot>),
+}
+
+impl PartialEq for Msg {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Input(a), Self::Input(b)) => a == b,
+            (Self::Snapshot(a), Self::Snapshot(b)) => Arc::ptr_eq(a, b),
+            (Self::Resize, Self::Resize)
+            | (Self::Terminate, Self::Terminate)
+            | (Self::InputClosed, Self::InputClosed) => true,
+            _ => false,
+        }
+    }
+}
+
+/// What the UI asks the engine to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UiCommand {
+    /// Send this request.
+    Send(RequestId),
+    /// Cancel it.
+    Cancel(RequestId),
 }
 
 /// Whether the startup splash plays.
@@ -102,7 +129,7 @@ impl App {
             Msg::Terminate => return Ok(Flow::Quit),
             Msg::InputClosed => return Err(TuiError::input_closed()),
             Msg::Input(Input::Key(chord)) => chord,
-            Msg::Resize | Msg::Input(_) => return Ok(Flow::Continue),
+            Msg::Resize | Msg::Input(_) | Msg::Snapshot(_) => return Ok(Flow::Continue),
         };
         let action = keys::lookup(self.context(), chord);
         if let Screen::Splash(splash) = &mut self.screen
@@ -157,6 +184,11 @@ impl App {
         {
             self.shown = Some((next, now + NOTICE_FOR));
         }
+    }
+
+    /// The commands queued since the last call.
+    pub(crate) fn take_commands(&mut self) -> Vec<UiCommand> {
+        Vec::new()
     }
 
     /// How long the loop may block before the next draw; `None` blocks until input.
@@ -312,6 +344,238 @@ mod tests {
 
     fn screen(terminal: &Terminal<TestBackend>) -> String {
         terminal.backend().to_string()
+    }
+
+    mod main_view {
+        use std::path::{Path, PathBuf};
+        use std::time::Instant;
+
+        use pawsman_core::state::{AppState, Event};
+        use pawsman_model::Collection;
+        use pawsman_net::{NetEvent, Response};
+
+        use super::*;
+
+        const FILES: &[(&str, &str)] = &[
+            (
+                "a-users.req.toml",
+                "name = \"List users\"\nurl = \"http://127.0.0.1:8787/users\"\n\n[headers]\nAccept = \"application/json\"\n",
+            ),
+            (
+                "b-create.req.toml",
+                "name = \"Create user\"\nmethod = \"POST\"\nurl = \"http://127.0.0.1:8787/users\"\n\n[body]\ntext = \"{\\\"name\\\":\\\"Ada\\\"}\"\n",
+            ),
+            ("c-broken.req.toml", "name = "),
+        ];
+
+        fn state(files: &[(&str, &str)]) -> AppState {
+            let files = files
+                .iter()
+                .map(|(n, t)| (PathBuf::from(format!("/demo/{n}")), (*t).to_owned()))
+                .collect();
+            AppState::new(Collection::from_files(
+                Path::new("/demo"),
+                Some("format = 1\nname = \"Demo\"\n"),
+                files,
+            ))
+        }
+
+        fn done(state: &mut AppState, n: u32, status: u16, body: &[u8]) {
+            let id = RequestId::new(n);
+            state.apply(Event::Send(id), Instant::now());
+            let response = Response::for_tests(status, body, Duration::from_millis(123));
+            state.apply(Event::Net(NetEvent::Done { id, response }), Instant::now());
+        }
+
+        fn app_with(state: &mut AppState) -> App {
+            let mut app = App::new(SplashSetting::Off, caps(), vec![]);
+            app.update(Msg::Snapshot(state.snapshot()), Duration::ZERO)
+                .unwrap();
+            app
+        }
+
+        #[test]
+        fn a_snapshot_with_a_collection_opens_the_main_view() {
+            let mut app = app_with(&mut state(FILES));
+
+            let text = screen(&render(&mut app, 160, 40, Duration::ZERO));
+
+            assert!(
+                text.contains("Requests") && text.contains("List users"),
+                "main view:\n{text}"
+            );
+            assert!(text.contains("F5 send"), "main hints:\n{text}");
+        }
+
+        #[test]
+        fn f5_queues_a_send_for_the_selected_request() {
+            let mut app = app_with(&mut state(FILES));
+
+            app.update(key(Chord::plain(KeyCode::F(5))), Duration::ZERO)
+                .unwrap();
+
+            assert_eq!(
+                app.take_commands(),
+                vec![UiCommand::Send(RequestId::new(1))],
+                "first entry selected"
+            );
+            assert!(app.take_commands().is_empty(), "taken once");
+        }
+
+        #[test]
+        fn down_moves_the_selection_and_tab_cycles_focus() {
+            let mut app = app_with(&mut state(FILES));
+
+            app.update(key(Chord::plain(KeyCode::Down)), Duration::ZERO)
+                .unwrap();
+            app.update(key(Chord::plain(KeyCode::Char('j'))), Duration::ZERO)
+                .unwrap();
+            app.update(key(Chord::plain(KeyCode::Char('j'))), Duration::ZERO)
+                .unwrap();
+            app.update(key(Chord::plain(KeyCode::F(5))), Duration::ZERO)
+                .unwrap();
+
+            assert_eq!(
+                app.take_commands(),
+                vec![UiCommand::Send(RequestId::new(3))],
+                "stops at the last entry"
+            );
+            app.update(key(Chord::plain(KeyCode::Tab)), Duration::ZERO)
+                .unwrap();
+            app.update(key(Chord::plain(KeyCode::Up)), Duration::ZERO)
+                .unwrap();
+            app.update(key(Chord::plain(KeyCode::F(5))), Duration::ZERO)
+                .unwrap();
+            assert_eq!(
+                app.take_commands(),
+                vec![UiCommand::Send(RequestId::new(3))],
+                "Up outside the sidebar keeps the selection"
+            );
+        }
+
+        #[test]
+        fn esc_cancels_only_while_sending() {
+            let mut st = state(FILES);
+            let mut app = app_with(&mut st);
+            app.update(key(Chord::plain(KeyCode::Esc)), Duration::ZERO)
+                .unwrap();
+            assert!(app.take_commands().is_empty(), "idle: nothing to cancel");
+
+            st.apply(Event::Send(RequestId::new(1)), Instant::now());
+            app.update(Msg::Snapshot(st.snapshot()), Duration::ZERO)
+                .unwrap();
+            app.update(key(Chord::plain(KeyCode::Esc)), Duration::ZERO)
+                .unwrap();
+
+            assert_eq!(
+                app.take_commands(),
+                vec![UiCommand::Cancel(RequestId::new(1))],
+                "sending: cancel"
+            );
+        }
+
+        #[test]
+        fn a_request_in_flight_ticks_every_100ms() {
+            let mut st = state(FILES);
+            st.apply(Event::Send(RequestId::new(1)), Instant::now());
+            let mut app = app_with(&mut st);
+
+            let text = screen(&render(&mut app, 160, 40, Duration::ZERO));
+
+            assert!(text.contains("sending"), "elapsed shown:\n{text}");
+            assert_eq!(
+                app.next_tick(Duration::ZERO),
+                Some(Duration::from_millis(100)),
+                "ticks while sending"
+            );
+        }
+
+        #[test]
+        fn control_bytes_in_a_body_are_not_written_raw() {
+            let mut st = state(FILES);
+            done(&mut st, 1, 200, b"ok\x1b[2J\x07\x00end");
+            let mut app = app_with(&mut st);
+
+            let text = screen(&render(&mut app, 160, 40, Duration::ZERO));
+
+            assert!(
+                text.contains("ok\u{fffd}[2J\u{fffd}\u{fffd}end"),
+                "escapes neutralised:\n{text}"
+            );
+        }
+
+        #[test]
+        fn the_selected_invalid_entry_shows_its_error() {
+            let mut app = app_with(&mut state(FILES));
+            for _ in 0..2 {
+                app.update(key(Chord::plain(KeyCode::Down)), Duration::ZERO)
+                    .unwrap();
+            }
+
+            let text = screen(&render(&mut app, 160, 40, Duration::ZERO));
+
+            assert!(text.contains("model::invalid_file"), "error shown:\n{text}");
+        }
+
+        #[test]
+        fn a_load_error_shows_on_home() {
+            let mut st = AppState::new(Err(pawsman_model::ModelError::not_a_collection(
+                Path::new("/x"),
+            )));
+            let mut app = app_with(&mut st);
+
+            let text = screen(&render(&mut app, 100, 24, Duration::ZERO));
+
+            assert!(
+                text.contains("no collection open") && text.contains("model::not_a_collection"),
+                "{text}"
+            );
+        }
+
+        #[test]
+        fn snapshot_160x40_done() {
+            let mut st = state(FILES);
+            done(&mut st, 1, 200, b"[{\"id\":1,\"name\":\"Ada\"}]");
+            let mut app = app_with(&mut st);
+
+            insta::assert_snapshot!(render(&mut app, 160, 40, Duration::ZERO).backend());
+        }
+
+        #[test]
+        fn snapshot_100x30_stacked_failed() {
+            let mut st = state(FILES);
+            let id = RequestId::new(1);
+            st.apply(Event::Send(id), Instant::now());
+            let error = pawsman_net::NetError::connect(
+                "127.0.0.1:8787",
+                &std::io::Error::other("connection refused"),
+            );
+            st.apply(Event::Net(NetEvent::Failed { id, error }), Instant::now());
+            let mut app = app_with(&mut st);
+
+            insta::assert_snapshot!(render(&mut app, 100, 30, Duration::ZERO).backend());
+        }
+
+        #[test]
+        fn snapshot_60x20_one_pane() {
+            let mut st = state(FILES);
+            done(&mut st, 1, 404, b"not found");
+            let mut app = app_with(&mut st);
+            app.update(key(Chord::plain(KeyCode::BackTab)), Duration::ZERO)
+                .unwrap();
+
+            insta::assert_snapshot!(render(&mut app, 60, 20, Duration::ZERO).backend());
+        }
+
+        #[test]
+        fn tiny_main_views_never_panic() {
+            let mut st = state(FILES);
+            done(&mut st, 1, 200, b"x");
+            for (w, h) in [(0, 0), (1, 1), (5, 2), (30, 4), (79, 10), (80, 3)] {
+                let mut app = app_with(&mut st);
+                render(&mut app, w, h, Duration::ZERO);
+            }
+        }
     }
 
     #[test]
