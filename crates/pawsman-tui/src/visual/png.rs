@@ -109,6 +109,7 @@ impl Renderer {
 /// Draws block elements and light box drawing exactly; false for anything else.
 fn shape(img: &mut RgbImage, ch: char, ox: u32, oy: u32, fg: (u8, u8, u8)) -> bool {
     let (w, h) = (CELL_W, CELL_H);
+    let half_w = w / 2;
     match ch {
         '█' => fill(img, ox, oy, w, h, fg),
         '▀' => fill(img, ox, oy, w, h / 2, fg),
@@ -116,20 +117,20 @@ fn shape(img: &mut RgbImage, ch: char, ox: u32, oy: u32, fg: (u8, u8, u8)) -> bo
         '▌' => fill(img, ox, oy, w / 2, h, fg),
         '▐' => fill(img, ox + w / 2, oy, w / 2, h, fg),
         _ => {
-            let Some((l, r, u, d)) = box_arms(ch) else {
+            let Some((left, right, up, down)) = box_arms(ch) else {
                 return false;
             };
-            let (cx, cy) = (ox + w / 2, oy + h / 2);
-            if l {
-                fill(img, ox, cy, w / 2 + 1, 1, fg);
+            let (cx, cy) = (ox + half_w, oy + h / 2);
+            if left {
+                fill(img, ox, cy, half_w + 1, 1, fg);
             }
-            if r {
-                fill(img, cx, cy, w - w / 2, 1, fg);
+            if right {
+                fill(img, cx, cy, w - half_w, 1, fg);
             }
-            if u {
+            if up {
                 fill(img, cx, oy, 1, h / 2 + 1, fg);
             }
-            if d {
+            if down {
                 fill(img, cx, cy, 1, h - h / 2, fg);
             }
         }
@@ -155,10 +156,10 @@ fn box_arms(ch: char) -> Option<(bool, bool, bool, bool)> {
     })
 }
 
-fn fill(img: &mut RgbImage, x: u32, y: u32, w: u32, h: u32, c: (u8, u8, u8)) {
-    for py in y..(y + h).min(img.height()) {
-        for px in x..(x + w).min(img.width()) {
-            img.put_pixel(px, py, Rgb([c.0, c.1, c.2]));
+fn fill(img: &mut RgbImage, left: u32, top: u32, width: u32, height: u32, rgb: (u8, u8, u8)) {
+    for py in top..(top + height).min(img.height()) {
+        for px in left..(left + width).min(img.width()) {
+            img.put_pixel(px, py, Rgb([rgb.0, rgb.1, rgb.2]));
         }
     }
 }

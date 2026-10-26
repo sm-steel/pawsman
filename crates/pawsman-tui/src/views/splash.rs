@@ -75,7 +75,7 @@ impl Splash {
         if !fits(area) {
             return;
         }
-        let logo = paint(buf, area);
+        let logo = paint(buf, area, self.depth);
         if self.animated() {
             let delta = elapsed.saturating_sub(self.last);
             self.last = elapsed;
@@ -133,7 +133,7 @@ pub(crate) fn fits(area: Rect) -> bool {
 
 /// Fills the background and paints the logo and tagline centred in `area`; returns the rectangle
 /// they cover.
-fn paint(buf: &mut Buffer, area: Rect) -> Rect {
+fn paint(buf: &mut Buffer, area: Rect, depth: ColorDepth) -> Rect {
     for y in area.top()..area.bottom() {
         for x in area.left()..area.right() {
             if let Some(cell) = buf.cell_mut((x, y)) {
@@ -144,7 +144,7 @@ fn paint(buf: &mut Buffer, area: Rect) -> Rect {
     }
     let x0 = area.x + area.width.saturating_sub(LOGO_W) / 2;
     let y0 = area.y + area.height.saturating_sub(LOGO_H) / 2;
-    draw_logo(buf, x0, y0);
+    draw_logo(buf, x0, y0, depth);
     let width = u16::try_from(TAGLINE.width()).unwrap_or(u16::MAX);
     let tx = area.x + area.width.saturating_sub(width) / 2;
     buf.set_string(
@@ -156,8 +156,10 @@ fn paint(buf: &mut Buffer, area: Rect) -> Rect {
     Rect::new(x0, y0, LOGO_W, LOGO_H).intersection(area)
 }
 
-/// Paints the logo rows with their final gradient at `(x, y)`, leaving the background alone.
-pub(crate) fn draw_logo(buf: &mut Buffer, x: u16, y: u16) {
+/// Paints the logo rows with their final gradient at `(x, y)`, leaving the background alone. On 16
+/// colours the gradient is stepped through four named colours, since the nearest named colour of
+/// the pastel middle is white.
+pub(crate) fn draw_logo(buf: &mut Buffer, x: u16, y: u16, depth: ColorDepth) {
     for (row, line) in (0u16..).zip(LOGO) {
         for (col, ch) in (0u16..).zip(line.chars()) {
             if ch == ' ' {
@@ -165,10 +167,21 @@ pub(crate) fn draw_logo(buf: &mut Buffer, x: u16, y: u16) {
             }
             let t = f32::from(col) / f32::from(LOGO_W);
             if let Some(cell) = buf.cell_mut((x.saturating_add(col), y.saturating_add(row))) {
-                cell.set_char(ch)
-                    .set_fg(lerp((255, 105, 180), (90, 210, 255), t));
+                cell.set_char(ch).set_fg(logo_color(t, depth));
             }
         }
+    }
+}
+
+fn logo_color(t: f32, depth: ColorDepth) -> Color {
+    if depth != ColorDepth::Ansi16 {
+        return lerp((255, 105, 180), (90, 210, 255), t);
+    }
+    match t {
+        t if t < 0.25 => Color::LightMagenta,
+        t if t < 0.5 => Color::Magenta,
+        t if t < 0.75 => Color::LightBlue,
+        _ => Color::LightCyan,
     }
 }
 

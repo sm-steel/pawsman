@@ -13,7 +13,7 @@ use ratatui::{Frame, Terminal};
 use crate::input::{Input, Reader};
 use crate::term::{Caps, InTmux, Term, probe};
 use crate::views::splash::{self, Splash};
-use crate::views::{help, home};
+use crate::views::{colors, help, home};
 use crate::{Options, TuiError};
 
 /// Everything the main loop reacts to.
@@ -140,11 +140,12 @@ impl App {
             frame,
             area,
             self.shown.as_ref().map(|(notice, _)| notice),
-            self.caps.hint(),
+            &self.caps,
         );
         if self.overlay == Overlay::Help {
             help::draw(frame, area);
         }
+        colors::downsample(frame.buffer_mut(), area, self.caps.color());
     }
 
     fn expire(&mut self, now: Duration) {

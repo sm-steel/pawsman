@@ -10,12 +10,13 @@ use ratatui::widgets::{Block, Paragraph};
 
 use super::hints;
 use super::splash::{BG, LOGO_H, LOGO_W, draw_logo};
-use crate::term::CapsHint;
+use crate::term::Caps;
 
 const DIM: Color = Color::Rgb(150, 150, 175);
 
 /// Draws the home view: wordmark, "no collection open", the notice and the hint bar.
-pub(crate) fn draw(frame: &mut Frame, area: Rect, notice: Option<&Notice>, hint: Option<CapsHint>) {
+pub(crate) fn draw(frame: &mut Frame, area: Rect, notice: Option<&Notice>, caps: &Caps) {
+    let hint = caps.hint();
     frame.render_widget(Block::new().style(Style::new().bg(BG)), area);
     if area.width == 0 || area.height == 0 {
         return;
@@ -29,6 +30,7 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, notice: Option<&Notice>, hint:
             frame.buffer_mut(),
             area.x + (area.width - LOGO_W) / 2,
             logo_y,
+            caps.color(),
         );
         logo_y + 4
     } else {
