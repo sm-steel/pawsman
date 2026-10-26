@@ -288,6 +288,16 @@ mod tests {
     }
 
     #[test]
+    fn inside_tmux_no_decrqss_precedes_the_passthrough() {
+        let q = query(InTmux::Yes);
+
+        assert!(
+            find(q.bytes(), b"\x1bP$q").is_none(),
+            "tmux drops the passthrough after a DECRQSS request"
+        );
+    }
+
+    #[test]
     fn kitty_answers_everything() {
         let r =
             parse(b"\x1b_Gi=31;OK\x1b\\\x1b[?1u\x1b[6;20;10t\x1bP1$r48:2:1:2:3m\x1b\\\x1b[?62;22c");

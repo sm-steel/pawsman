@@ -10,7 +10,7 @@
 | Fuzzing | cargo-fuzz; cURL, Postman, Bruno parsers | import |
 | Mutation | `cargo mutants --in-diff` before opening a PR | locally |
 | Visual | PNG files from `TestBackend` (`visual-check` skill) | tui |
-| Terminal | PTY tests replaying canned replies for each probe and fallback | tui |
+| Terminal | PTY tests replaying canned replies for each probe and fallback (pty-process plus a vt100 screen) | cli (`tests/it`) |
 
 - Tests first: a `test:` commit failing on assertions, then the implementation ([rules §1](../rules/rust-project.md#1-working-agreement)).
 - Test names are sentences; arrange, act, assert separated by blank lines; assertions carry a message.
