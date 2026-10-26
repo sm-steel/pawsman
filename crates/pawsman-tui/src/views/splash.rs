@@ -5,8 +5,10 @@ use std::time::Duration;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Color;
+use ratatui::style::{Color, Style};
 use tachyonfx::{CellFilter, Effect, Interpolation, SimpleRng, fx};
+
+use unicode_width::UnicodeWidthStr as _;
 
 use crate::term::ColorDepth;
 
@@ -27,6 +29,11 @@ pub(crate) const BG: Color = Color::Rgb(22, 22, 34);
 /// How long the static (16-colour) splash stays.
 pub(crate) const STATIC_FOR: Duration = Duration::from_millis(1200);
 
+/// One frame step; `sequence` and `delay` move one stage per `process` call.
+const TICK: Duration = Duration::from_millis(16);
+/// Longer than the whole effect; `skip` advances by this much.
+const TOTAL: Duration = Duration::from_millis(2000);
+
 /// The startup splash.
 pub(crate) struct Splash {
     effect: Effect,
@@ -38,52 +45,145 @@ pub(crate) struct Splash {
 impl Splash {
     /// A splash with a seeded coalesce pattern, drawn for `depth`.
     pub(crate) fn new(seed: u32, depth: ColorDepth) -> Self {
-        let _ = (
-            seed,
-            CellFilter::Text,
-            Interpolation::QuadOut,
-            SimpleRng::new(0),
-        );
+        let effect = fx::parallel(&[
+            fx::coalesce((500, Interpolation::QuadOut))
+                .with_rng(SimpleRng::new(seed))
+                .with_filter(CellFilter::Text),
+            fx::fade_from_fg(BG, (750, Interpolation::CubicOut)),
+            fx::delay(
+                550,
+                fx::ping_pong(fx::hsl_shift_fg(
+                    [40.0, 0.0, 12.0],
+                    (300, Interpolation::SineInOut),
+                )),
+            ),
+        ]);
         Self {
-            effect: fx::sleep(0),
+            effect,
             last: Duration::ZERO,
             depth,
             skipped: false,
         }
     }
 
-    /// Draws the frame `elapsed` after the start into `buf`.
+    fn animated(&self) -> bool {
+        self.depth != ColorDepth::Ansi16
+    }
+
+    /// Draws the frame `elapsed` after the start into `buf`; nothing when `area` is too small.
     pub(crate) fn frame(&mut self, elapsed: Duration, buf: &mut Buffer, area: Rect) {
-        let _ = (elapsed, buf, area, self.last, self.depth);
+        if !fits(area) {
+            return;
+        }
+        let logo = paint(buf, area);
+        if self.animated() {
+            let delta = elapsed.saturating_sub(self.last);
+            self.last = elapsed;
+            self.advance(delta, buf, logo);
+        }
+        super::colors::downsample(buf, area, self.depth);
     }
 
     /// Jumps to the end; the next frame is the final one.
     pub(crate) fn skip(&mut self) {
         self.skipped = true;
+        let area = Rect::new(0, 0, LOGO_W, LOGO_H);
+        let mut scratch = Buffer::empty(area);
+        self.advance(TOTAL, &mut scratch, area);
+    }
+
+    /// Advances the effect by `delta` and applies it once to `buf`. A long delta is stepped in
+    /// ticks, every tick but the last on a scratch copy, because each call blends with what is
+    /// already in the buffer.
+    fn advance(&mut self, mut delta: Duration, buf: &mut Buffer, area: Rect) {
+        let mut scratch = buf.clone();
+        while delta > TICK && !self.effect.done() {
+            scratch.clone_from(buf);
+            self.effect.process(TICK.into(), &mut scratch, area);
+            delta -= TICK;
+        }
+        self.effect.process(delta.into(), buf, area);
     }
 
     /// The splash has finished.
     pub(crate) fn done(&self, elapsed: Duration) -> bool {
-        let _ = elapsed;
-        false
+        if self.animated() {
+            self.effect.done()
+        } else {
+            self.skipped || elapsed >= STATIC_FOR
+        }
     }
 
     /// When the next frame is due, or `None` once done.
     pub(crate) fn next_tick(&self, elapsed: Duration) -> Option<Duration> {
-        let _ = elapsed;
-        None
+        if self.done(elapsed) {
+            None
+        } else if self.animated() {
+            Some(TICK)
+        } else {
+            Some(STATIC_FOR.saturating_sub(elapsed))
+        }
     }
 }
 
 /// Whether `area` is big enough for the logo with a margin.
 pub(crate) fn fits(area: Rect) -> bool {
-    let _ = area;
-    true
+    area.width >= LOGO_W + 4 && area.height >= LOGO_H + 2
+}
+
+/// Fills the background and paints the logo and tagline centred in `area`; returns the rectangle
+/// they cover.
+fn paint(buf: &mut Buffer, area: Rect) -> Rect {
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.reset();
+                cell.bg = BG;
+            }
+        }
+    }
+    let x0 = area.x + area.width.saturating_sub(LOGO_W) / 2;
+    let y0 = area.y + area.height.saturating_sub(LOGO_H) / 2;
+    draw_logo(buf, x0, y0);
+    let width = u16::try_from(TAGLINE.width()).unwrap_or(u16::MAX);
+    let tx = area.x + area.width.saturating_sub(width) / 2;
+    buf.set_string(
+        tx,
+        y0 + LOGO_H - 1,
+        TAGLINE,
+        Style::new().fg(Color::Rgb(150, 150, 175)),
+    );
+    Rect::new(x0, y0, LOGO_W, LOGO_H).intersection(area)
 }
 
 /// Paints the logo rows with their final gradient at `(x, y)`, leaving the background alone.
 pub(crate) fn draw_logo(buf: &mut Buffer, x: u16, y: u16) {
-    let _ = (buf, x, y);
+    for (row, line) in (0u16..).zip(LOGO) {
+        for (col, ch) in (0u16..).zip(line.chars()) {
+            if ch == ' ' {
+                continue;
+            }
+            let t = f32::from(col) / f32::from(LOGO_W);
+            if let Some(cell) = buf.cell_mut((x.saturating_add(col), y.saturating_add(row))) {
+                cell.set_char(ch)
+                    .set_fg(lerp((255, 105, 180), (90, 210, 255), t));
+            }
+        }
+    }
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "clamped to 0..=255 before the cast"
+)]
+fn lerp(a: (u8, u8, u8), b: (u8, u8, u8), t: f32) -> Color {
+    let mix = |x: u8, y: u8| {
+        (f32::from(x) + (f32::from(y) - f32::from(x)) * t)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
+    Color::Rgb(mix(a.0, b.0), mix(a.1, b.1), mix(a.2, b.2))
 }
 
 #[cfg(test)]

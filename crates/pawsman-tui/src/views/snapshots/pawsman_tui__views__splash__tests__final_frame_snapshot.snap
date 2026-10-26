@@ -1,0 +1,11 @@
+---
+source: crates/pawsman-tui/src/views/splash.rs
+expression: text(&buf)
+---
+
+
+         █ █   █▀▀█ █▀▀█ █   █ █▀▀▀ █▀▄▀█ █▀▀█ █▀▀▄
+        █ ▄ █  █▄▄█ █▄▄█ █ █ █ ▀▀▀█ █ ▀ █ █▄▄█ █  █
+         ███   █    █  █ ▀▄▀▄▀ ▄▄▄█ █   █ █  █ █  █
+
+                   a terminal API client
