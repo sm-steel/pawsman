@@ -2,7 +2,7 @@
 //! and endless trickles, and a record of every request received. Sync API, for sync tests.
 #![expect(
     clippy::unwrap_used,
-    clippy::expect_used,
+    clippy::missing_panics_doc,
     reason = "test support: a failure here is a test failure"
 )]
 
@@ -117,12 +117,19 @@ impl FakeHttp {
     pub fn start_on(port: u16) -> Self {
         let listener = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
         let addr = listener.local_addr().unwrap();
-        let _ = std::marker::PhantomData::<Body>;
+        listener.set_nonblocking(true).unwrap();
+        let state: Arc<Mutex<State>> = Arc::default();
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let shared = Arc::clone(&state);
+        let thread = std::thread::Builder::new()
+            .name("fake-http".into())
+            .spawn(move || serve(listener, shared, stopped))
+            .unwrap();
         Self {
             addr,
-            state: Arc::default(),
-            stop: None,
-            thread: None,
+            state,
+            stop: Some(stop),
+            thread: Some(thread),
         }
     }
 
@@ -146,6 +153,110 @@ impl FakeHttp {
     pub fn received(&self) -> Vec<Received> {
         self.state.lock().unwrap().received.clone()
     }
+}
+
+fn serve(
+    listener: std::net::TcpListener,
+    state: Arc<Mutex<State>>,
+    mut stopped: tokio::sync::oneshot::Receiver<()>,
+) {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async move {
+        let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+        loop {
+            tokio::select! {
+                _ = &mut stopped => break,
+                accepted = listener.accept() => {
+                    let Ok((stream, _)) = accepted else { continue };
+                    let state = Arc::clone(&state);
+                    tokio::spawn(async move {
+                        let service = hyper::service::service_fn(move |req| {
+                            let state = Arc::clone(&state);
+                            async move { Ok::<_, Infallible>(answer(req, &state).await) }
+                        });
+                        let _ = hyper::server::conn::http1::Builder::new()
+                            .serve_connection(hyper_util::rt::TokioIo::new(stream), service)
+                            .await;
+                    });
+                }
+            }
+        }
+    });
+    runtime.shutdown_timeout(Duration::from_millis(200));
+}
+
+async fn answer(
+    req: hyper::Request<hyper::body::Incoming>,
+    state: &Mutex<State>,
+) -> hyper::Response<Body> {
+    use http_body_util::BodyExt as _;
+
+    let method = req.method().as_str().to_owned();
+    let path = req.uri().path().to_owned();
+    let headers = req
+        .headers()
+        .iter()
+        .map(|(k, v)| (k.as_str().to_owned(), v.to_str().unwrap_or("").to_owned()))
+        .collect();
+    let body = req
+        .into_body()
+        .collect()
+        .await
+        .map(|b| b.to_bytes().to_vec())
+        .unwrap_or_default();
+    let reply = {
+        let mut state = state.lock().unwrap();
+        state.received.push(Received {
+            method: method.clone(),
+            path: path.clone(),
+            headers,
+            body,
+        });
+        state
+            .routes
+            .iter()
+            .rev()
+            .find(|(m, p, _)| *m == method && *p == path)
+            .map(|(_, _, r)| r.clone())
+    };
+    let Some(reply) = reply else {
+        return respond(
+            &Reply::new(404).body("no route"),
+            full(b"no route".to_vec()),
+        );
+    };
+    tokio::time::sleep(reply.delay).await;
+    let body = if let Some((chunk, every)) = reply.trickle.clone() {
+        let (mut tx, channel) = http_body_util::channel::Channel::<Bytes, Infallible>::new(4);
+        tokio::spawn(async move {
+            let chunk = Bytes::from(chunk);
+            while tx.send_data(chunk.clone()).await.is_ok() {
+                tokio::time::sleep(every).await;
+            }
+        });
+        channel.boxed()
+    } else {
+        full(reply.body.repeat(reply.repeat))
+    };
+    respond(&reply, body)
+}
+
+fn full(bytes: Vec<u8>) -> Body {
+    use http_body_util::BodyExt as _;
+
+    http_body_util::Full::new(Bytes::from(bytes)).boxed()
+}
+
+fn respond(reply: &Reply, body: Body) -> hyper::Response<Body> {
+    let mut response = hyper::Response::builder().status(reply.status);
+    for (name, value) in &reply.headers {
+        response = response.header(name, value);
+    }
+    response.body(body).unwrap()
 }
 
 impl Drop for FakeHttp {
