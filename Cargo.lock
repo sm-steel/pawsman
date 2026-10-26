@@ -968,6 +968,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "pawsman-net"
+version = "0.0.0"
+dependencies = [
+ "bytes",
+ "http",
+ "pawsman-error",
+ "pawsman-model",
+ "pawsman-test-support",
+ "rstest",
+ "tracing",
+]
+
+[[package]]
 name = "pawsman-test-support"
 version = "0.0.0"
 dependencies = [

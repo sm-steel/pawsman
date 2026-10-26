@@ -15,6 +15,7 @@ publish = false
 pawsman-error = { path = "crates/pawsman-error" }
 pawsman-core = { path = "crates/pawsman-core" }
 pawsman-model = { path = "crates/pawsman-model" }
+pawsman-net = { path = "crates/pawsman-net" }
 pawsman-test-support = { path = "crates/pawsman-test-support" }
 pawsman-tui = { path = "crates/pawsman-tui" }
 

@@ -1,0 +1,22 @@
+[package]
+name = "pawsman-net"
+description = "pawsman networking: HTTP on a private tokio runtime thread"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+pawsman-error.workspace = true
+pawsman-model.workspace = true
+bytes.workspace = true
+http.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+pawsman-test-support.workspace = true
+rstest.workspace = true
+
+[lints]
+workspace = true
