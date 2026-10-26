@@ -10,7 +10,7 @@ Delivers the M1 row of the [program spec §5](2026-10-23-pawsman-design.md#5-mil
 | --- | --- |
 | Pure Rust, ratatui, kitty-first, works over SSH | Every piece is checked in kitty, over SSH and in tmux (the Docker matrix from M0) |
 | A beautiful startup animation, as early as possible | Piece 1.1 ships the binary with the splash before any API-client feature |
-| M1 exit: edit and send requests against a wiremock fake in the TUI, visuals reviewed | Piece 1.7 ends on that check, automated in a PTY test and done once by hand |
+| M1 exit: edit and send requests against a fake server in the TUI, visuals reviewed | Piece 1.7 ends on that check, automated in a PTY test and done once by hand |
 
 Assumed: HTTP only (GraphQL, WebSocket, SSE and gRPC are M4); no scripts, captures or assertions (M2); no auth helpers, cookies or proxies (M3); secrets resolve from the process env and `.env` only (keyring and vault are M3).
 
@@ -83,10 +83,10 @@ End-to-end check: `pawsman` in kitty, over SSH into the matrix box, in tmux ther
 Scope:
 
 - `pawsman-model`: `Collection` (a directory with `pawsman.toml` and flat `*.req.toml` files), `Request` (name, method, URL, headers, text body), TOML read with unknown keys refused. Interpolation is left out; `{{…}}` passes through unchanged and is reported.
-- `pawsman-net`: `Net::start()` spawns the runtime thread and returns a sync handle; `send(RequestId, ResolvedRequest)` and `cancel(RequestId)`; `NetEvent::{Head, Done, Failed}` over a channel. Bodies stream into memory up to `body_cap_bytes` (default 16 MiB) and spill to a `tempfile` beyond it. Timeouts from settings (default 30 s total, 10 s connect).
+- `pawsman-net`: `Net::start()` spawns the runtime thread and returns a sync handle; `send(RequestId, ResolvedRequest)` and `cancel(RequestId)`; `NetEvent::{Done, Failed, Cancelled}` through a callback; one connection per request over HTTP/1.1 (pooling and HTTP/2 come with the timeline in 1.5). Bodies stream into memory up to `body_cap_bytes` (default 16 MiB) and spill to a `tempfile` beyond it. Timeouts from settings (default 30 s total, 10 s connect).
 - `pawsman-core`: engine thread, `Command`, `AppState::apply`, `Snapshot`, cancel-and-join on shutdown.
 - `pawsman-tui`: three panes (sidebar list, request pane read-only, response pane with status, time, size and raw text body); focus with Tab and the mouse; F5, Ctrl-Enter and Alt-Enter send; Esc cancels a request in flight.
-- `pawsman-test-support`: wiremock fixtures and a `pawsman-fake` binary that serves them on a printed port, for manual and PTY runs; a fixture collection under `fixtures/demo`.
+- `pawsman-test-support`: an own fake HTTP server (wiremock has no release within a year) and a `pawsman-fake` binary that serves the demo routes on a printed port, for manual and PTY runs; a fixture collection under `fixtures/demo`.
 
 Out of scope: the full format, environments, editing, watcher, pretty bodies.
 
@@ -205,20 +205,20 @@ Each enters with the piece that first needs it, pinned with `=` to the latest re
 | Piece | Crates |
 | --- | --- |
 | 1.1 | ratatui 0.30, crossterm 0.29 (`osc52`), tachyonfx 0.25 (`std` only), rustix (`event`, `fs`, `termios`), signal-hook, unicode-width, unicode-segmentation, clap (derive), tracing, tracing-subscriber (`env-filter`), tracing-appender, serde, toml; dev: insta, rstest, pty-process, vt100, fontdue and image (PNG files for the visual check) |
-| 1.2 | tokio (rt, net, time, sync, macros), hyper 1, hyper-util, http, http-body-util, bytes, rustls (`ring`), tokio-rustls, rustls-platform-verifier, async-compression, tempfile, url; dev: wiremock |
+| 1.2 | tokio, hyper 1, hyper-util, http, http-body-util, bytes, rustls (`ring`), tokio-rustls, rustls-platform-verifier, tokio-util, tempfile (async-compression waits for the viewer in 1.6) |
 | 1.3 | secrecy, uuid, time, fastrand; dev: proptest |
 | 1.4 | notify, notify-debouncer-full, nucleo-matcher |
 | 1.5 | tui-textarea (if compatible) |
 | 1.6 | serde_json, serde_json_path, quick-xml, image (png, jpeg, gif, webp), flate2, base64, ratatui-image (sixel only, no chafa) |
 | 1.7 | shell-words |
 
-`deny.toml` wrappers grow with them: tokio, hyper, rustls and wiremock reachable only from `pawsman-net` and `pawsman-test-support`; `image` and the ratatui family only from `pawsman-tui`; `notify` only from `pawsman-core`. `tools/check-deps.sh` gets the matching forbid rows.
+`deny.toml` wrappers grow with them: tokio, hyper and rustls reachable only from `pawsman-net` and `pawsman-test-support`; `image` and the ratatui family only from `pawsman-tui`; `notify` only from `pawsman-core`. `tools/check-deps.sh` gets the matching forbid rows.
 
 ## Testing
 
 - Pure parts first and hardest: the input decoder, the probe parser, interpolation, the format, the cURL parser, the kitty encoder (byte-exact snapshots), the reducer.
 - Views on `TestBackend` with insta snapshots; visual PNG files for every view a piece adds.
-- `pawsman-net` against wiremock in `#[tokio::test(start_paused = true)]` where timing matters, and over a real loopback socket for TLS (a test certificate generated in the test).
+- `pawsman-net` against the fake HTTP server over loopback, with short timeouts where timing matters; TLS against a test certificate generated in the test (piece 1.5).
 - PTY tests in `pawsman-cli/tests/it` for the probe paths, Ctrl-Q, shutdown during a request and the exit check.
 - `cargo mutants --in-diff` before each PR.
 

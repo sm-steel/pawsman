@@ -1,0 +1,11 @@
+name = "Create user"
+method = "POST"
+url = "http://127.0.0.1:8787/echo"
+
+[headers]
+Content-Type = "application/json"
+
+[body]
+text = """
+{"name": "Ada"}
+"""

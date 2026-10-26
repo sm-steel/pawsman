@@ -36,3 +36,9 @@ One line per non-obvious decision.
 - **Layout folding in 1.1** — under the kitty protocol Ctrl-Q on a Russian layout arrives as Ctrl-й and must still quit (→ [rules/tui.md §5](../rules/tui.md)).
 - **16-colour splash holds the final frame for 1.2 s** — with a stepped four-colour logo, since nearest-colour mapping turns the pastel gradient white.
 - **No `Terminal::clear`** — ratatui's clear asks for the cursor position and crossterm reads the reply from the tty itself, racing the input thread.
+- **CDLA-Permissive-2.0 for `webpki-root-certs` only** — the Mozilla CA bundle as data, pulled in by rustls-platform-verifier on Linux; a permissive data licence (`deny.toml` exception).
+- **Boundary rows follow the dependency graph** — `tools/check-deps.sh` does not forbid tokio for core, the TUI or the CLI, which reach it through `pawsman-net` by design; `deny.toml` wrappers keep tokio out of their own code.
+- **Own fake HTTP server, not wiremock** — wiremock has no release within a year; the fake on hyper gives exact delays and trickles (`pawsman_test_support::fake_http`).
+- **One connection per request, HTTP/1.1 only, until the timeline** — the simplest correct path; pooling, HTTP/2 and phase timings come together in piece 1.5.
+- **Snapshots and commands cross the UI boundary as values** — the engine publishes `Arc<Snapshot>`s through a callback, the UI queues `UiCommand`s the loop hands back, so both sides test without threads.
+- **The raw body view draws the first 256 KB** — redrawing megabytes every frame stalls the UI; the viewer in piece 1.6 scrolls through all of it.

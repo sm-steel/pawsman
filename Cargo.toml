@@ -14,23 +14,35 @@ publish = false
 # Internal crates (CODE-ARCHITECTURE §1); external dependencies are added by the tasks that need them.
 pawsman-error = { path = "crates/pawsman-error" }
 pawsman-core = { path = "crates/pawsman-core" }
+pawsman-model = { path = "crates/pawsman-model" }
+pawsman-net = { path = "crates/pawsman-net" }
 pawsman-test-support = { path = "crates/pawsman-test-support" }
 pawsman-tui = { path = "crates/pawsman-tui" }
 
+bytes = "=1.12.1"
 clap = { version = "=4.6.7", features = ["derive"] }
 crossterm = "=0.29.0"
 fontdue = "=0.9.5"
+http = "=1.5.0"
+http-body-util = { version = "=0.1.5", features = ["channel"] }
+hyper = { version = "=1.12.0", features = ["client", "server", "http1"] }
+hyper-util = { version = "=0.1.21", features = ["tokio"] }
 image = { version = "=0.25.10", default-features = false, features = ["png"] }
 insta = "=1.49.0"
 pty-process = "=0.5.4"
 ratatui = { version = "=0.30.2", default-features = false, features = ["crossterm"] }
+rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-platform-verifier = "=0.7.1"
 rstest = { version = "=0.28.0", default-features = false }
 rustix = { version = "=1.1.5", features = ["event", "fs", "termios", "process", "stdio"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 signal-hook = { version = "=0.4.5", default-features = false }
 tachyonfx = { version = "=0.25.2", default-features = false, features = ["std"] }
 tempfile = "=3.27.0"
-toml = { version = "=1.1.8", default-features = false, features = ["parse", "serde", "display"] }
+toml = { version = "=1.1.8", default-features = false, features = ["std", "parse", "serde", "display", "preserve_order"] }
+tokio = { version = "=1.54.1", features = ["rt-multi-thread", "net", "time", "sync", "macros", "io-util", "fs"] }
+tokio-rustls = { version = "=0.26.6", default-features = false, features = ["ring", "tls12", "logging"] }
+tokio-util = "=0.7.20"
 tracing = "=0.1.44"
 tracing-appender = "=0.2.5"
 tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["env-filter", "fmt", "std", "ansi"] }

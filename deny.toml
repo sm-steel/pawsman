@@ -25,6 +25,11 @@ allow = [
 ]
 confidence-threshold = 0.8
 
+# The Mozilla CA bundle as data, used by rustls-platform-verifier on Linux; a permissive data licence.
+[[licenses.exceptions]]
+crate = "webpki-root-certs"
+allow = ["CDLA-Permissive-2.0"]
+
 [licenses.private]
 ignore = true
 
@@ -34,7 +39,9 @@ wildcards = "deny"
 allow-wildcard-paths = true
 deny = [
   # Crate boundaries (CODE-ARCHITECTURE §2): heavy dependencies only through their owning crate.
-  { crate = "tokio", wrappers = ["pawsman-net", "pawsman-grpc", "pawsman-mock", "reqwest", "hyper", "hyper-util", "h2", "tower", "tonic", "tokio-util", "tokio-stream", "tokio-rustls", "tokio-tungstenite", "axum"], reason = "async only on the net runtime thread (CODE-ARCHITECTURE §3)" },
+  { crate = "tokio", wrappers = ["pawsman-net", "pawsman-grpc", "pawsman-mock", "pawsman-test-support", "reqwest", "hyper", "hyper-util", "http-body-util", "h2", "tower", "tonic", "tokio-util", "tokio-stream", "tokio-rustls", "tokio-tungstenite", "axum"], reason = "async only on the net runtime thread (CODE-ARCHITECTURE §3)" },
+  { crate = "hyper", wrappers = ["pawsman-net", "pawsman-test-support", "pawsman-mock", "hyper-util", "reqwest", "tonic", "axum"], reason = "HTTP only in pawsman-net (and fakes)" },
+  { crate = "rustls", wrappers = ["pawsman-net", "tokio-rustls", "rustls-platform-verifier", "hyper-rustls"], reason = "TLS only in pawsman-net" },
   { crate = "ratatui", wrappers = ["pawsman-tui", "tachyonfx", "ratatui-image", "tui-big-text"], reason = "drawing only in pawsman-tui" },
   { crate = "ratatui-core", wrappers = ["pawsman-tui", "ratatui", "ratatui-widgets", "ratatui-crossterm", "tachyonfx", "ratatui-image", "tui-big-text"], reason = "drawing only in pawsman-tui" },
   { crate = "ratatui-widgets", wrappers = ["pawsman-tui", "ratatui", "tui-big-text"], reason = "drawing only in pawsman-tui" },

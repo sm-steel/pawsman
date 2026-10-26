@@ -1,8 +1,10 @@
 //! What the binary hands the TUI.
 
+use std::path::PathBuf;
+
 use pawsman_core::env::EnvSnapshot;
 use pawsman_core::notice::Notice;
-use pawsman_core::settings::ImageMode;
+use pawsman_core::settings::{ImageMode, Settings};
 
 use crate::SplashSetting;
 
@@ -13,6 +15,8 @@ pub struct Options {
     splash: SplashSetting,
     images: ImageMode,
     notices: Vec<Notice>,
+    dir: Option<PathBuf>,
+    settings: Settings,
 }
 
 impl Options {
@@ -24,7 +28,31 @@ impl Options {
             splash,
             images,
             notices: Vec::new(),
+            dir: None,
+            settings: Settings::default(),
         }
+    }
+
+    /// The collection directory to open.
+    #[must_use]
+    pub fn dir(mut self, dir: Option<PathBuf>) -> Self {
+        self.dir = dir;
+        self
+    }
+
+    /// The loaded settings.
+    #[must_use]
+    pub fn settings(mut self, settings: Settings) -> Self {
+        self.settings = settings;
+        self
+    }
+
+    pub(crate) fn take_dir(&mut self) -> Option<PathBuf> {
+        self.dir.take()
+    }
+
+    pub(crate) fn settings_ref(&self) -> &Settings {
+        &self.settings
     }
 
     /// Notices to show once the main view is up.
