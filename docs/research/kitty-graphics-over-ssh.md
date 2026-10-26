@@ -53,5 +53,8 @@ Findings:
 - **tmux needs UTF-8.** Over SSH the session usually has no `LANG`; tmux then rewrites non-ASCII cells (placeholders, and also half blocks and box drawing). `tmux -u` or a UTF-8 `LANG` fixes it; tmux's `RGB` terminal feature does not matter.
 - **Inside tmux only the outer terminal's DA1 counts.** tmux answers the first DA1 itself and claims sixel even when the outer terminal (kitty) cannot show sixel.
 - **The two-DA1 probe works**: inside tmux the passthrough-wrapped graphics query is answered, then the outer DA1, in about 20 ms. Without passthrough the second DA1 never comes; waiting only a grace period after tmux's own DA1 ends the probe in 150 ms instead of 1.15 s. The grace must cover the SSH round trip, so M1 uses 500 ms inside tmux.
+- **pawsman's probe in the same box** (M1.1): kitty over SSH answers in 6 ms (graphics, keyboard, truecolour); tmux with passthrough in 16–26 ms (graphics); without passthrough and without UTF-8 it ends after the 500 ms tmux grace; xterm gives sixel and 16 colours at once.
+- **Inside tmux, probe before the alternate screen.** With the probe written after `CSI ? 1049 h`, tmux 3.5a never delivered the passthrough replies (graphics and outer DA1), on every run after the first; probing first, as the M0 PoC did, got them every time.
+- **No DECRQSS inside tmux**: tmux does not answer it, so the truecolour check is left out of the tmux probe and `COLORTERM` decides.
 - **ratatui-image's own detection is wrong under tmux without passthrough**: it chose kitty and drew garbage, which pawsman's probe-driven choice avoids.
 - xterm answers DA1 with sixel (attribute 4) but not `CSI 16 t`; the cell size then comes from `TIOCGWINSZ` pixel fields or a default.
