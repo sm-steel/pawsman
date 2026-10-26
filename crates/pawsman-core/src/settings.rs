@@ -98,8 +98,11 @@ impl FromStr for ImageMode {
     type Err = UnknownImageMode;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let _ = s;
-        Ok(Self::Auto)
+        Self::NAMES
+            .iter()
+            .find(|(name, _)| *name == s)
+            .map(|(_, mode)| *mode)
+            .ok_or_else(|| UnknownImageMode(s.to_owned()))
     }
 }
 
@@ -110,8 +113,13 @@ impl Settings {
     ///
     /// `core::settings_invalid` when the file cannot be read or parsed.
     pub fn load(path: &Path) -> Result<Self, CoreError> {
-        let _ = CoreError::settings_invalid(path, "");
-        Ok(Self::default())
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
+            Err(err) => return Err(CoreError::settings_invalid(path, err.to_string())),
+        };
+        toml::from_str(&text)
+            .map_err(|err| CoreError::settings_invalid(path, err.message().replace('\n', " ")))
     }
 
     /// The `[ui]` table.

@@ -20,8 +20,19 @@ impl Paths {
     ///
     /// `core::no_home` when a directory has neither an absolute `XDG_*` value nor `HOME`.
     pub fn from_env(env: &EnvSnapshot) -> Result<Self, CoreError> {
-        let _ = env;
-        Err(CoreError::no_home())
+        let dir = |xdg: &str, fallback: &str| -> Result<PathBuf, CoreError> {
+            let base = env
+                .var(xdg)
+                .map(PathBuf::from)
+                .filter(|p| p.is_absolute())
+                .or_else(|| env.var("HOME").map(|home| Path::new(home).join(fallback)))
+                .ok_or_else(CoreError::no_home)?;
+            Ok(base.join("pawsman"))
+        };
+        Ok(Self {
+            config: dir("XDG_CONFIG_HOME", ".config")?,
+            state: dir("XDG_STATE_HOME", ".local/state")?,
+        })
     }
 
     /// `…/pawsman` under the config directory.

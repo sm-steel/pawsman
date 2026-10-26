@@ -41,8 +41,8 @@ impl Notice {
     /// An error notice: the code, then the message, so a truncated line still shows the code.
     pub fn from_error(err: &dyn ErrorInfo) -> Self {
         Self {
-            level: Level::Info,
-            text: err.to_string(),
+            level: Level::Error,
+            text: format!("{}: {err}", err.code()),
         }
     }
 

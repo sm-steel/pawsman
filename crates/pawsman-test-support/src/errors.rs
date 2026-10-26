@@ -7,7 +7,10 @@ use pawsman_error::ErrorCode;
 
 /// Panics naming every code in `codes` that is duplicated, outside `namespace`, or without a page
 /// at `docs/errors/<namespace>/<slug>.md`.
-#[expect(clippy::panic, reason = "a test assertion helper")]
+///
+/// # Panics
+///
+/// When any code fails a check; the message lists every problem.
 pub fn assert_pages(namespace: &str, codes: &[ErrorCode]) {
     let docs = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/errors");
     let mut seen = BTreeSet::new();
@@ -26,7 +29,9 @@ pub fn assert_pages(namespace: &str, codes: &[ErrorCode]) {
             problems.push(format!("{code}: no page at {}", page.display()));
         }
     }
-    if !problems.is_empty() {
-        panic!("error registry: {}", problems.join("; "));
-    }
+    assert!(
+        problems.is_empty(),
+        "error registry: {}",
+        problems.join("; ")
+    );
 }
