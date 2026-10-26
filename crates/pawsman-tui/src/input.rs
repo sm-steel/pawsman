@@ -1,10 +1,12 @@
 //! Keyboard, mouse, paste and focus input, decoded by pawsman itself from `/dev/tty`.
 
 mod decoder;
+mod reader;
 
 use std::time::Duration;
 
 pub use decoder::{Button, Decoder, Input, Mouse, MouseKind};
+pub(crate) use reader::Reader;
 
 /// How long a lone `ESC` waits for the rest of a sequence before it counts as the Esc key.
 pub const ESC_TIMEOUT: Duration = Duration::from_millis(25);
