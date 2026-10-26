@@ -99,7 +99,7 @@ fn a_directory_that_is_not_a_collection_reports_it() {
     let snap = wait(&rx, |s| s.load_error().is_some());
 
     assert_eq!(
-        snap.load_error().map(|e| e.code()),
+        snap.load_error().map(pawsman_error::ErrorInfo::code),
         Some(pawsman_model::codes::NOT_A_COLLECTION),
         "load error"
     );
