@@ -8,7 +8,6 @@ use std::time::{Duration, Instant};
 use pawsman_core::engine::Engine;
 use pawsman_core::settings::Settings;
 use pawsman_core::state::{RequestStatus, Snapshot};
-use pawsman_error::ErrorInfo as _;
 use pawsman_model::RequestId;
 use pawsman_test_support::fake_http::{FakeHttp, Reply};
 
