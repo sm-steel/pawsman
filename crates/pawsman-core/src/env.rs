@@ -41,50 +41,58 @@ impl EnvSnapshot {
     /// The value of `name`; an empty value counts as unset.
     #[must_use]
     pub fn var(&self, name: &str) -> Option<&str> {
-        let _ = name;
-        None
+        self.vars
+            .get(name)
+            .map(String::as_str)
+            .filter(|v| !v.is_empty())
     }
 
     /// `TERM`.
     #[must_use]
     pub fn term(&self) -> Option<&str> {
-        None
+        self.var("TERM")
     }
 
     /// Running inside tmux.
     #[must_use]
     pub fn in_tmux(&self) -> bool {
-        false
+        self.var("TMUX").is_some()
     }
 
     /// Running in an SSH session.
     #[must_use]
     pub fn over_ssh(&self) -> bool {
-        false
+        self.var("SSH_TTY").is_some() || self.var("SSH_CONNECTION").is_some()
     }
 
     /// The first set of `LC_ALL`, `LC_CTYPE`, `LANG` names UTF-8.
     #[must_use]
     pub fn utf8_locale(&self) -> bool {
-        false
+        ["LC_ALL", "LC_CTYPE", "LANG"]
+            .into_iter()
+            .find_map(|name| self.var(name))
+            .is_some_and(|locale| {
+                let locale = locale.to_ascii_lowercase();
+                locale.contains("utf-8") || locale.contains("utf8")
+            })
     }
 
     /// `COLORTERM` says truecolor.
     #[must_use]
     pub fn truecolor(&self) -> bool {
-        false
+        matches!(self.var("COLORTERM"), Some("truecolor" | "24bit"))
     }
 
     /// `PAWSMAN_NO_ANIMATION` is set to anything but `0`.
     #[must_use]
     pub fn no_animation(&self) -> bool {
-        false
+        self.var("PAWSMAN_NO_ANIMATION").is_some_and(|v| v != "0")
     }
 
     /// The log filter: `PAWSMAN_LOG`, else `RUST_LOG`.
     #[must_use]
     pub fn log_filter(&self) -> Option<&str> {
-        None
+        self.var("PAWSMAN_LOG").or_else(|| self.var("RUST_LOG"))
     }
 }
 
