@@ -162,3 +162,25 @@ fn silence_times_out_and_a_late_reply_types_nothing() {
         "nothing typed by the reply:\n{log}"
     );
 }
+
+#[test]
+fn the_probe_runs_before_the_alternate_screen() {
+    let s = Session::spawn(
+        &Spec::new()
+            .arg("--no-splash")
+            .env("TERM", "tmux-256color")
+            .env("TMUX", "/tmp/t,1,0")
+            .replies(TMUX_PASSTHROUGH),
+    );
+
+    s.wait_for_screen("no collection open");
+
+    let raw = s.raw();
+    let at = |needle: &[u8]| raw.windows(needle.len()).position(|w| w == needle);
+    let probe = at(b"\x1bPtmux;\x1b\x1b_G").expect("graphics query written");
+    let alt = at(b"\x1b[?1049h").expect("alternate screen entered");
+    assert!(
+        probe < alt,
+        "tmux drops passthrough replies after the alternate-screen switch"
+    );
+}
