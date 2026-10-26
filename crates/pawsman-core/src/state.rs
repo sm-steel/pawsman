@@ -130,6 +130,24 @@ impl AppState {
         }
     }
 
+    /// State without a collection.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            collection: None,
+            load_error: None,
+            statuses: BTreeMap::new(),
+            notices: Vec::new(),
+            generation: 0,
+        }
+    }
+
+    /// Bumps on every change.
+    #[must_use]
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
     /// Applies `event` at `now`; returns what to run.
     pub fn apply(&mut self, event: Event, now: Instant) -> Vec<Effect> {
         match event {
