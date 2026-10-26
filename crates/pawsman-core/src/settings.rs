@@ -14,6 +14,46 @@ use crate::CoreError;
 #[serde(deny_unknown_fields, default)]
 pub struct Settings {
     ui: Ui,
+    http: Http,
+}
+
+/// The `[http]` table.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Http {
+    timeout_ms: u64,
+    connect_timeout_ms: u64,
+    body_cap_bytes: u64,
+}
+
+impl Default for Http {
+    fn default() -> Self {
+        Self {
+            timeout_ms: 0,
+            connect_timeout_ms: 0,
+            body_cap_bytes: 0,
+        }
+    }
+}
+
+impl Http {
+    /// `timeout_ms`: the deadline for a whole request.
+    #[must_use]
+    pub fn timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.timeout_ms)
+    }
+
+    /// `connect_timeout_ms`: the deadline for DNS, TCP and TLS.
+    #[must_use]
+    pub fn connect_timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.connect_timeout_ms)
+    }
+
+    /// `body_cap_bytes`: how much of a body stays in memory.
+    #[must_use]
+    pub fn body_cap(&self) -> u64 {
+        self.body_cap_bytes
+    }
 }
 
 /// The `[ui]` table.
@@ -127,6 +167,12 @@ impl Settings {
     pub fn ui(&self) -> &Ui {
         &self.ui
     }
+
+    /// The `[http]` table.
+    #[must_use]
+    pub fn http(&self) -> &Http {
+        &self.http
+    }
 }
 
 impl Ui {
@@ -215,6 +261,36 @@ mod tests {
             "names the key: {err}"
         );
         assert!(!err.to_string().contains('\n'), "one line: {err}");
+    }
+
+    #[test]
+    fn http_defaults_and_values() {
+        let defaults = Settings::default();
+        let file = write("[http]\ntimeout_ms = 5000\nbody_cap_bytes = 1024\n");
+        let set = Settings::load(file.path()).unwrap();
+
+        assert_eq!(
+            defaults.http().timeout(),
+            std::time::Duration::from_secs(30),
+            "30 s"
+        );
+        assert_eq!(
+            defaults.http().connect_timeout(),
+            std::time::Duration::from_secs(10),
+            "10 s"
+        );
+        assert_eq!(defaults.http().body_cap(), 16 * 1024 * 1024, "16 MiB");
+        assert_eq!(
+            set.http().timeout(),
+            std::time::Duration::from_secs(5),
+            "set"
+        );
+        assert_eq!(set.http().body_cap(), 1024, "set");
+        assert_eq!(
+            set.http().connect_timeout(),
+            std::time::Duration::from_secs(10),
+            "unset keeps the default"
+        );
     }
 
     #[test]
