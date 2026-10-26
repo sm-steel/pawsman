@@ -25,8 +25,8 @@ pub struct Term {
 }
 
 impl Term {
-    /// Opens `/dev/tty`, enters raw mode and installs the panic hook; the probe comes next, then
-    /// [`enter_screen`](Self::enter_screen).
+    /// Opens the terminal, enters raw mode and installs the panic hook; the probe and
+    /// [`enter_screen`](Self::enter_screen) come next.
     ///
     /// # Errors
     ///
@@ -50,8 +50,8 @@ impl Term {
         Ok(Self { tty })
     }
 
-    /// Enters the alternate screen and hides the cursor. Runs after the probe: inside tmux the
-    /// passthrough replies did not arrive when the probe followed the alternate-screen switch.
+    /// Enters the alternate screen and hides the cursor: after the probe inside tmux, whose
+    /// passthrough replies do not arrive once the alternate screen is on, before it elsewhere.
     ///
     /// # Errors
     ///

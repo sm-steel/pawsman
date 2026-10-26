@@ -179,9 +179,17 @@ impl App {
 /// Any `TuiError`: no terminal, a refused mode, a terminal write failure, or stopped input.
 pub fn run(options: Options) -> Result<(), TuiError> {
     let mut term = Term::open()?;
-    let probed = term.probe(InTmux::from_env(options.env()))?;
+    // Inside tmux the passthrough replies only arrive before the alternate-screen switch; elsewhere
+    // the alternate screen goes first, so a terminal that prints the query payload prints it there.
+    let tmux = InTmux::from_env(options.env());
+    if tmux == InTmux::No {
+        term.enter_screen()?;
+    }
+    let probed = term.probe(tmux)?;
     tracing::debug!(replies = %probed.bytes.escape_ascii(), "probe replies");
-    term.enter_screen()?;
+    if tmux == InTmux::Yes {
+        term.enter_screen()?;
+    }
     let caps = Caps::resolve(
         &probe::parse(&probed.bytes),
         options.env(),
