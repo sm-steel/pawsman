@@ -25,3 +25,9 @@ One line per non-obvious decision.
 - **Rhai limits and an engine per run** — operations, depth, sizes and a per-run time budget; an engine costs 0.5 ms (→ [Rhai sandbox](research/rhai-sandbox.md)).
 - **Unbounded-memory tests run under a memory cap** — an unlimited Rhai engine exhausted the machine once (→ [Rhai sandbox](research/rhai-sandbox.md#limits)).
 - **Splash effects tick on a scratch buffer and stay inside the logo** — tachyonfx stalls on long steps and compounds repeated ticks; whole-screen effects cost 20 KB per frame (→ [startup animation](research/startup-animation.md#prototype-findings)).
+- **M1 in seven pieces, splash first** — the binary and splash ship before any API-client feature, then the thinnest path from file to response, then each part widens (→ [M1 spec](superpowers/specs/2026-10-26-m1-http-client-design.md#pieces)).
+- **Own input decoder over `/dev/tty`** — crossterm reads the terminal itself and would type a late probe reply as keys (→ [M1 spec](superpowers/specs/2026-10-26-m1-http-client-design.md#cross-cutting-decisions)).
+- **Own HTTP stack on hyper** — reqwest cannot time connect and TLS separately for the timeline (→ [M1 spec](superpowers/specs/2026-10-26-m1-http-client-design.md#cross-cutting-decisions)).
+- **XDG paths from the env snapshot on Linux and macOS** — one layout, no directories crate (→ [M1 spec](superpowers/specs/2026-10-26-m1-http-client-design.md#cross-cutting-decisions)).
+- **tmux UTF-8 judged from the locale** — pawsman cannot spawn `tmux` to ask; `--images` overrides (→ [M1 spec](superpowers/specs/2026-10-26-m1-http-client-design.md#cross-cutting-decisions)).
+- **typos learns `flate`** — it splits the crate name `flate2` and corrects the stem (`_typos.toml`).
