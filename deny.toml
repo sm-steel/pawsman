@@ -25,6 +25,11 @@ allow = [
 ]
 confidence-threshold = 0.8
 
+# The Mozilla CA bundle as data, used by rustls-platform-verifier on Linux; a permissive data licence.
+[[licenses.exceptions]]
+crate = "webpki-root-certs"
+allow = ["CDLA-Permissive-2.0"]
+
 [licenses.private]
 ignore = true
 

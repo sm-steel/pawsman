@@ -36,3 +36,4 @@ One line per non-obvious decision.
 - **Layout folding in 1.1** — under the kitty protocol Ctrl-Q on a Russian layout arrives as Ctrl-й and must still quit (→ [rules/tui.md §5](../rules/tui.md)).
 - **16-colour splash holds the final frame for 1.2 s** — with a stepped four-colour logo, since nearest-colour mapping turns the pastel gradient white.
 - **No `Terminal::clear`** — ratatui's clear asks for the cursor position and crossterm reads the reply from the tty itself, racing the input thread.
+- **CDLA-Permissive-2.0 for `webpki-root-certs` only** — the Mozilla CA bundle as data, pulled in by rustls-platform-verifier on Linux; a permissive data licence (`deny.toml` exception).
