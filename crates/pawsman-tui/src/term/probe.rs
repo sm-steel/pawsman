@@ -1,4 +1,11 @@
-//! The capability probe: query bytes, and a pure parser for the replies (order does not matter).
+//! The capability probe: query bytes, a pure parser for the replies (order does not matter), and
+//! the reader that waits for them.
+
+use std::io::{self, Read};
+use std::os::fd::AsFd;
+use std::time::{Duration, Instant};
+
+use rustix::event::{PollFd, PollFlags, Timespec, poll};
 
 use super::caps::CellPx;
 use super::tmux::{InTmux, passthrough};
@@ -147,12 +154,77 @@ fn csi(rest: &[u8], replies: &mut Replies) -> usize {
     2 + fin + 1
 }
 
+/// How long the probe waits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Timeouts {
+    /// For all replies.
+    pub reply: Duration,
+    /// After the timeout, to swallow late replies.
+    pub grace: Duration,
+    /// Inside tmux, for the outer DA1 after tmux's own.
+    pub tmux_grace: Duration,
+}
+
+impl Timeouts {
+    /// 1 s, 150 ms, 500 ms (docs/research/kitty-graphics-over-ssh.md).
+    pub const DEFAULT: Self = Self {
+        reply: Duration::from_secs(1),
+        grace: Duration::from_millis(150),
+        tmux_grace: Duration::from_millis(500),
+    };
+}
+
+/// What the probe read and how long it took.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Probed {
+    /// Every reply byte.
+    pub bytes: Vec<u8>,
+    /// From the first read to the end.
+    pub took: Duration,
+}
+
+/// Reads replies until `query.da1_needed()` DA1 replies arrived. On a timeout it keeps reading for
+/// the grace period so a late reply does not reach the input; inside tmux, once tmux's own DA1 is
+/// in, it waits at most `tmux_grace` for the outer one.
+///
+/// # Errors
+///
+/// Any I/O error from `poll` or `read`.
+pub fn read_replies<F: Read + AsFd>(
+    tty: &mut F,
+    query: &Query,
+    timeouts: Timeouts,
+) -> io::Result<Probed> {
+    let _ = (tty, query, timeouts, poll_in::<F>);
+    Ok(Probed {
+        bytes: Vec::new(),
+        took: Duration::ZERO,
+    })
+}
+
+/// Waits up to `timeout` for `fd` to be readable.
+pub(crate) fn poll_in<F: AsFd>(fd: &F, timeout: Duration) -> io::Result<bool> {
+    let ts = Timespec {
+        tv_sec: i64::try_from(timeout.as_secs()).unwrap_or(i64::MAX),
+        tv_nsec: i64::from(timeout.subsec_nanos()),
+    };
+    let mut fds = [PollFd::new(fd, PollFlags::IN)];
+    match poll(&mut fds, Some(&ts)) {
+        Ok(n) => Ok(n > 0),
+        Err(rustix::io::Errno::INTR) => Ok(false),
+        Err(err) => Err(err.into()),
+    }
+}
+
 pub(super) fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write as _;
+    use std::os::unix::net::UnixStream;
+
     use super::*;
 
     #[test]
@@ -222,6 +294,89 @@ mod tests {
             "semicolon form"
         );
         assert!(!parse(b"\x1bP0$r\x1b\\").truecolor, "invalid request");
+    }
+
+    fn fast() -> Timeouts {
+        Timeouts {
+            reply: Duration::from_millis(300),
+            grace: Duration::from_millis(50),
+            tmux_grace: Duration::from_millis(120),
+        }
+    }
+
+    #[test]
+    fn reading_stops_at_the_da1() {
+        let (mut ours, mut theirs) = UnixStream::pair().unwrap();
+        theirs.write_all(b"\x1b_Gi=31;OK\x1b\\\x1b[?62c").unwrap();
+
+        let probed = read_replies(&mut ours, &query(InTmux::No), fast()).unwrap();
+
+        assert!(parse(&probed.bytes).graphics, "graphics reply read");
+        assert!(
+            probed.took < Duration::from_millis(100),
+            "no waiting after DA1: {:?}",
+            probed.took
+        );
+    }
+
+    #[test]
+    fn silence_times_out_after_reply_plus_grace_and_swallows_late_bytes() {
+        let (mut ours, mut theirs) = UnixStream::pair().unwrap();
+        let late = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(320));
+            theirs.write_all(b"\x1b_Gi=31;OK\x1b\\").unwrap();
+            theirs
+        });
+
+        let start = Instant::now();
+        let probed = read_replies(&mut ours, &query(InTmux::No), fast()).unwrap();
+        let _theirs = late.join().unwrap();
+
+        assert!(
+            start.elapsed() >= Duration::from_millis(340),
+            "waited reply + grace: {:?}",
+            start.elapsed()
+        );
+        assert!(
+            parse(&probed.bytes).graphics,
+            "the late reply landed in the probe, not the input"
+        );
+    }
+
+    #[test]
+    fn inside_tmux_a_missing_second_da1_costs_only_the_tmux_grace() {
+        let (mut ours, mut theirs) = UnixStream::pair().unwrap();
+        theirs.write_all(b"\x1b[?1;2;4c").unwrap();
+
+        let probed = read_replies(&mut ours, &query(InTmux::Yes), fast()).unwrap();
+
+        assert!(
+            probed.took >= Duration::from_millis(110),
+            "waited for the outer DA1: {:?}",
+            probed.took
+        );
+        assert!(
+            probed.took < Duration::from_millis(250),
+            "but not the full timeout: {:?}",
+            probed.took
+        );
+    }
+
+    #[test]
+    fn inside_tmux_both_da1_end_it_at_once() {
+        let (mut ours, mut theirs) = UnixStream::pair().unwrap();
+        theirs
+            .write_all(b"\x1b[?1;2;4c\x1b_Gi=31;OK\x1b\\\x1b[?62;22c")
+            .unwrap();
+
+        let probed = read_replies(&mut ours, &query(InTmux::Yes), fast()).unwrap();
+
+        assert!(
+            probed.took < Duration::from_millis(100),
+            "outer DA1 ends it: {:?}",
+            probed.took
+        );
+        assert_eq!(parse(&probed.bytes).da1.len(), 2, "both DA1 read");
     }
 
     #[test]
