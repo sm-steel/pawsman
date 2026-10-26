@@ -85,6 +85,7 @@ name = "pawsman-core"
 version = "0.0.0"
 dependencies = [
  "pawsman-error",
+ "pawsman-test-support",
  "rstest",
  "serde",
  "tempfile",
@@ -95,6 +96,13 @@ dependencies = [
 [[package]]
 name = "pawsman-error"
 version = "0.0.0"
+
+[[package]]
+name = "pawsman-test-support"
+version = "0.0.0"
+dependencies = [
+ "pawsman-error",
+]
 
 [[package]]
 name = "pin-project-lite"

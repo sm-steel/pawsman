@@ -14,6 +14,7 @@ toml.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+pawsman-test-support.workspace = true
 rstest.workspace = true
 tempfile.workspace = true
 

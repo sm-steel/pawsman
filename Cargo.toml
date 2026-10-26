@@ -14,6 +14,7 @@ publish = false
 # Internal crates (CODE-ARCHITECTURE §1); external dependencies are added by the tasks that need them.
 pawsman-error = { path = "crates/pawsman-error" }
 pawsman-core = { path = "crates/pawsman-core" }
+pawsman-test-support = { path = "crates/pawsman-test-support" }
 
 clap = { version = "=4.6.7", features = ["derive"] }
 crossterm = "=0.29.0"
