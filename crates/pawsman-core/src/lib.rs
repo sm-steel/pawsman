@@ -8,5 +8,6 @@ pub mod keys;
 pub mod notice;
 pub mod paths;
 pub mod settings;
+pub mod store;
 
 pub use error::CoreError;

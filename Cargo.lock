@@ -845,6 +845,7 @@ name = "pawsman-core"
 version = "0.0.0"
 dependencies = [
  "pawsman-error",
+ "pawsman-model",
  "pawsman-test-support",
  "rstest",
  "serde",
