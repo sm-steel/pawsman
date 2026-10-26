@@ -29,9 +29,9 @@ pub struct Http {
 impl Default for Http {
     fn default() -> Self {
         Self {
-            timeout_ms: 0,
-            connect_timeout_ms: 0,
-            body_cap_bytes: 0,
+            timeout_ms: 30_000,
+            connect_timeout_ms: 10_000,
+            body_cap_bytes: 16 * 1024 * 1024,
         }
     }
 }

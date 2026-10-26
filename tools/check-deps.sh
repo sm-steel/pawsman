@@ -27,6 +27,7 @@ forbid pawsman-import tokio reqwest rhai "${ui[@]}"
 # core reaches tokio only through pawsman-net (ARCHITECTURE §1); deny.toml wrappers keep it out of core itself.
 forbid pawsman-core reqwest "${ui[@]}"
 forbid pawsman-net rhai "${ui[@]}"
-forbid pawsman-tui tokio reqwest rhai
-forbid pawsman-cli tokio reqwest
+# The TUI and the CLI reach tokio through core and net; deny.toml wrappers keep it out of their code.
+forbid pawsman-tui reqwest rhai
+forbid pawsman-cli reqwest
 echo "crate boundaries ok"

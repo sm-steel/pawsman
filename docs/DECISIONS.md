@@ -37,3 +37,4 @@ One line per non-obvious decision.
 - **16-colour splash holds the final frame for 1.2 s** — with a stepped four-colour logo, since nearest-colour mapping turns the pastel gradient white.
 - **No `Terminal::clear`** — ratatui's clear asks for the cursor position and crossterm reads the reply from the tty itself, racing the input thread.
 - **CDLA-Permissive-2.0 for `webpki-root-certs` only** — the Mozilla CA bundle as data, pulled in by rustls-platform-verifier on Linux; a permissive data licence (`deny.toml` exception).
+- **Boundary rows follow the dependency graph** — `tools/check-deps.sh` does not forbid tokio for core, the TUI or the CLI, which reach it through `pawsman-net` by design; `deny.toml` wrappers keep tokio out of their own code.

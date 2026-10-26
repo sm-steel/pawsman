@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use pawsman_model::{Collection, ModelError, RequestId};
+use pawsman_model::{Collection, EntryKind, ModelError, RequestId};
 use pawsman_net::{NetError, NetEvent, Outgoing, Response};
 
 use crate::notice::Notice;
@@ -98,7 +98,7 @@ pub enum Event {
 #[non_exhaustive]
 pub enum Effect {
     /// Send this request.
-    Send(RequestId, Outgoing),
+    Send(RequestId, Box<Outgoing>),
     /// Cancel this request.
     Cancel(RequestId),
 }
@@ -132,8 +132,79 @@ impl AppState {
 
     /// Applies `event` at `now`; returns what to run.
     pub fn apply(&mut self, event: Event, now: Instant) -> Vec<Effect> {
-        let _ = (event, now);
-        Vec::new()
+        match event {
+            Event::Send(id) => self.send(id, now),
+            Event::Cancel(id) => {
+                if matches!(self.statuses.get(&id), Some(RequestStatus::Sending { .. })) {
+                    vec![Effect::Cancel(id)]
+                } else {
+                    Vec::new()
+                }
+            }
+            Event::Net(event) => {
+                let (id, status) = match event {
+                    NetEvent::Done { id, response } => {
+                        (id, RequestStatus::Done(Arc::new(response)))
+                    }
+                    NetEvent::Failed { id, error } => (id, RequestStatus::Failed(error)),
+                    NetEvent::Cancelled { id } => (id, RequestStatus::Cancelled),
+                    _ => return Vec::new(),
+                };
+                self.set(id, status);
+                Vec::new()
+            }
+        }
+    }
+
+    fn send(&mut self, id: RequestId, now: Instant) -> Vec<Effect> {
+        if matches!(self.statuses.get(&id), Some(RequestStatus::Sending { .. })) {
+            return Vec::new();
+        }
+        let Some(collection) = self.collection.clone() else {
+            return Vec::new();
+        };
+        let Some(entry) = collection.entries().iter().find(|e| e.id() == id) else {
+            return Vec::new();
+        };
+        let request = match entry.kind() {
+            EntryKind::Request(request) => request,
+            EntryKind::Invalid(err) => {
+                self.notice(Notice::from_error(err));
+                return Vec::new();
+            }
+            _ => return Vec::new(),
+        };
+        let outgoing = Outgoing::new(
+            request.method(),
+            request.url(),
+            request.headers(),
+            request.body(),
+        );
+        match outgoing {
+            Ok(outgoing) => {
+                if request.has_template() {
+                    self.notice(Notice::warn(
+                        "variables are not resolved yet; sent as written",
+                    ));
+                }
+                self.set(id, RequestStatus::Sending { since: now });
+                vec![Effect::Send(id, Box::new(outgoing))]
+            }
+            Err(err) => {
+                self.set(id, RequestStatus::Failed(err));
+                Vec::new()
+            }
+        }
+    }
+
+    fn set(&mut self, id: RequestId, status: RequestStatus) {
+        self.statuses.insert(id, status);
+        self.generation += 1;
+    }
+
+    fn notice(&mut self, notice: Notice) {
+        self.notices.push(notice);
+        self.generation += 1;
     }
 
     /// A snapshot of the state; takes the pending notices.
