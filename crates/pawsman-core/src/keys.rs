@@ -18,6 +18,22 @@ pub enum Action {
     Close,
     /// Copy the selection.
     Copy,
+    /// Send the selected request.
+    Send,
+    /// Cancel the selected request.
+    Cancel,
+    /// Focus the next pane.
+    NextPane,
+    /// Focus the previous pane.
+    PrevPane,
+    /// Move up.
+    Up,
+    /// Move down.
+    Down,
+    /// Scroll a page up.
+    PageUp,
+    /// Scroll a page down.
+    PageDown,
 }
 
 /// Where a binding applies.
@@ -26,8 +42,10 @@ pub enum Action {
 pub enum Context {
     /// The startup splash.
     Splash,
-    /// The main view.
+    /// The view without a collection.
     Home,
+    /// The collection view: sidebar, request and response.
+    Main,
     /// The help overlay.
     Help,
 }
@@ -224,9 +242,46 @@ mod tests {
         );
     }
 
+    #[rstest]
+    #[case::f5(Chord::plain(KeyCode::F(5)), Action::Send)]
+    #[case::ctrl_enter(Chord::new(KeyCode::Enter, Mods::CTRL), Action::Send)]
+    #[case::alt_enter(Chord::new(KeyCode::Enter, Mods::ALT), Action::Send)]
+    #[case::esc(Chord::plain(KeyCode::Esc), Action::Cancel)]
+    #[case::tab(Chord::plain(KeyCode::Tab), Action::NextPane)]
+    #[case::backtab(Chord::plain(KeyCode::BackTab), Action::PrevPane)]
+    #[case::up(Chord::plain(KeyCode::Up), Action::Up)]
+    #[case::k(Chord::plain(KeyCode::Char('k')), Action::Up)]
+    #[case::down(Chord::plain(KeyCode::Down), Action::Down)]
+    #[case::j(Chord::plain(KeyCode::Char('j')), Action::Down)]
+    #[case::cyrillic_j(Chord::plain(KeyCode::Char('о')), Action::Down)]
+    #[case::page_down(Chord::plain(KeyCode::PageDown), Action::PageDown)]
+    #[case::page_up(Chord::plain(KeyCode::PageUp), Action::PageUp)]
+    #[case::quit(Chord::ctrl('q'), Action::Quit)]
+    #[case::help(Chord::plain(KeyCode::F(1)), Action::Help)]
+    fn main_view_bindings(#[case] chord: Chord, #[case] expected: Action) {
+        assert_eq!(lookup(Context::Main, chord), Some(expected), "{chord}");
+    }
+
+    #[test]
+    fn main_hints_lead_with_send() {
+        let hints = hints(Context::Main);
+
+        let keys: Vec<&str> = hints.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, ["F5", "Tab", "Esc", "Ctrl-Q", "F1"], "{hints:?}");
+    }
+
+    #[test]
+    fn main_keys_do_nothing_on_home() {
+        assert_eq!(
+            lookup(Context::Home, Chord::plain(KeyCode::F(5))),
+            None,
+            "no send without a collection"
+        );
+    }
+
     #[test]
     fn every_context_can_quit() {
-        for context in [Context::Splash, Context::Home, Context::Help] {
+        for context in [Context::Splash, Context::Home, Context::Main, Context::Help] {
             assert_eq!(
                 lookup(context, Chord::ctrl('q')),
                 Some(Action::Quit),
