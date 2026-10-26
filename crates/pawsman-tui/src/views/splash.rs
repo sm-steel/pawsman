@@ -310,6 +310,29 @@ mod tests {
     }
 
     #[test]
+    fn ansi16_logo_keeps_a_gradient() {
+        let buf = render_at(0, ColorDepth::Ansi16);
+
+        let mut colours: Vec<Color> = buf
+            .content
+            .iter()
+            .filter(|c| c.symbol() == "█")
+            .map(|c| c.fg)
+            .collect();
+        colours.dedup();
+        colours.sort_by_key(|c| format!("{c:?}"));
+        colours.dedup();
+
+        assert!(colours.len() >= 3, "a stepped gradient: {colours:?}");
+        assert!(
+            !colours
+                .iter()
+                .any(|c| matches!(c, Color::White | Color::Gray)),
+            "no letters washed out to white: {colours:?}"
+        );
+    }
+
+    #[test]
     fn animated_ticks_every_16ms_until_done() {
         let mut splash = Splash::new(42, ColorDepth::TrueColor);
 

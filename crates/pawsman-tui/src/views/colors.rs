@@ -104,6 +104,15 @@ fn rgb(color: Color) -> Option<(u8, u8, u8)> {
     }
 }
 
+/// The RGB value of any colour with a known value, named colours included (xterm defaults).
+#[cfg(test)]
+pub(crate) fn to_rgb(color: Color) -> Option<(u8, u8, u8)> {
+    ANSI.iter()
+        .find(|(named, _)| *named == color)
+        .map(|(_, c)| *c)
+        .or_else(|| rgb(color))
+}
+
 fn distance(a: (u8, u8, u8), b: (u8, u8, u8)) -> i32 {
     let d = |x: u8, y: u8| (i32::from(x) - i32::from(y)).pow(2);
     d(a.0, b.0) + d(a.1, b.1) + d(a.2, b.2)

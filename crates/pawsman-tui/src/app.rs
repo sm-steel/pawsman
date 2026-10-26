@@ -486,6 +486,25 @@ mod tests {
     }
 
     #[test]
+    fn home_and_help_have_no_rgb_without_truecolor() {
+        for term in ["xterm-256color", "xterm"] {
+            let env = EnvSnapshot::from_pairs([("TERM", term), ("LANG", "C.UTF-8")]);
+            let caps = Caps::resolve(&parse(b""), &env, ImageMode::Auto);
+            let mut app = App::new(SplashSetting::Off, caps, vec![Notice::warn("w")]);
+            app.update(key(Chord::plain(KeyCode::F(1))), Duration::ZERO)
+                .unwrap();
+
+            let terminal = render(&mut app, 80, 24, Duration::ZERO);
+
+            let rgb = terminal.backend().buffer().content.iter().any(|c| {
+                matches!(c.fg, ratatui::style::Color::Rgb(..))
+                    || matches!(c.bg, ratatui::style::Color::Rgb(..))
+            });
+            assert!(!rgb, "no RGB colours on {term}");
+        }
+    }
+
+    #[test]
     fn home_snapshot_80x24() {
         let mut app = App::new(SplashSetting::Off, caps(), vec![]);
 

@@ -8,6 +8,8 @@ pub mod input;
 mod options;
 pub mod term;
 mod views;
+#[cfg(test)]
+mod visual;
 
 pub use app::{SplashSetting, run};
 pub use error::TuiError;
