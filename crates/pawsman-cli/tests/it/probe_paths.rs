@@ -184,3 +184,24 @@ fn the_probe_runs_before_the_alternate_screen() {
         "tmux drops passthrough replies after the alternate-screen switch"
     );
 }
+
+#[test]
+fn outside_tmux_the_alternate_screen_covers_the_probe() {
+    let s = Session::spawn(
+        &Spec::new()
+            .arg("--no-splash")
+            .env("TERM", "linux")
+            .replies(b"\x1b[?6c"),
+    );
+
+    s.wait_for_screen("no collection open");
+
+    let raw = s.raw();
+    let at = |needle: &[u8]| raw.windows(needle.len()).position(|w| w == needle);
+    let probe = at(b"\x1b_Gi=31").expect("graphics query written");
+    let alt = at(b"\x1b[?1049h").expect("alternate screen entered");
+    assert!(
+        alt < probe,
+        "a terminal that prints the APC payload must print it on the alternate screen"
+    );
+}
