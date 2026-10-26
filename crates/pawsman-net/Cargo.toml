@@ -12,7 +12,20 @@ pawsman-error.workspace = true
 pawsman-model.workspace = true
 bytes.workspace = true
 http.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+rustls.workspace = true
+rustls-platform-verifier.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
+tokio-util.workspace = true
 tracing.workspace = true
+
+[features]
+# `Response::for_tests` for other crates' tests.
+test-util = []
 
 [dev-dependencies]
 pawsman-test-support.workspace = true
