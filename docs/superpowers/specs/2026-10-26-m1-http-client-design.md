@@ -55,9 +55,9 @@ flowchart LR
 
 Scope:
 
-- `pawsman-cli`: `pawsman [DIR] [--no-splash] [--images auto|kitty|sixel|blocks|off]`, `--version`. Builds the env snapshot, installs the rolling file log and the panic hook, runs the TUI, prints one exit line after restore when there is an error.
-- `pawsman-core`: `env::EnvSnapshot` (the one `std::env::vars_os` call, with an `#[expect]`), `paths`, `settings` (only `[ui]` is read in 1.1), and the first rows of the `keys` table (quit, help, skip), which the hint bar and F1 already read.
-- `pawsman-tui::term`: `Term` with `MODES`, setup and `restore` newest first, `Drop` and the panic hook (`try_lock`, never blocks); `suspend`/`resume` for later `$EDITOR`; `copy` (OSC 52, DCS-wrapped in tmux).
+- `pawsman-cli`: `pawsman [--no-splash] [--images auto|kitty|sixel|blocks|off]`, `--version` (the `DIR` argument comes with 1.2). Builds the env snapshot, installs the rolling file log and the panic hook, runs the TUI, prints one exit line after restore when there is an error.
+- `pawsman-core`: `env::EnvSnapshot` (the one `std::env::vars_os` call, with an `#[expect]`), `paths`, `settings` (only `[ui]` is read in 1.1), and the first rows of the `keys` table (quit, help, close, copy) with the Cyrillic folding table, so Ctrl-Q quits on a Russian layout; the hint bar and F1 already read it.
+- `pawsman-tui::term`: `Term` with `MODES`, raw mode through `rustix::termios` (saved and restored exactly), setup and `restore` newest first, `Drop` and the panic hook (`try_lock`, never blocks). `suspend`/`resume` come with `$EDITOR` in 1.5 and `copy` (OSC 52) with the first selection in 1.6.
 - `pawsman-tui::term::probe`: the M0 probe plus #42: inside tmux, a second DA1 through passthrough ends it, with at most 500 ms after tmux's own DA1, and tmux's DA1 never decides sixel. Produces `Caps` (graphics, keyboard protocol, cell size, colour depth, tmux and its UTF-8, SSH). The keyboard capability comes from this probe only.
 - `pawsman-tui::input`: decoder, input thread, signal pipe.
 - `pawsman-tui::app`: the main loop (drain all queued messages, then one draw; a timer only while the splash runs) and a placeholder main view: the small wordmark, "no collection open", and a hint bar (`Ctrl-Q quit · F1 help`), both generated from the key table.
@@ -68,12 +68,15 @@ Out of scope: images, collections, requests.
 | Failure | Code | Retry |
 | --- | --- | --- |
 | No terminal (`/dev/tty` cannot be opened) | `tui::no_tty` | permanent |
+| Writing to the terminal fails | `tui::terminal_io` | permanent |
+| The input thread stops | `tui::input_closed` | permanent |
+| Neither `HOME` nor `XDG_*` set | `core::no_home` (notice; no log, no settings) | permanent |
 | A required mode (raw, alternate screen) cannot be set | `tui::terminal_mode` | permanent |
 | Probe timed out | none: default `Caps`, logged | – |
 | Log directory not writable | none: the app runs without a log, a notice says so | – |
 | `settings.toml` invalid | `core::settings_invalid` (notice; defaults apply) | permanent |
 
-End-to-end check: `pawsman` in kitty, over SSH into the matrix box, in tmux there with and without passthrough, and in xterm: splash plays (or is skipped by a key), the placeholder view shows, Ctrl-Q returns a clean shell (`stty -a` unchanged, cursor keys legacy). A PTY test (portable-pty plus vt100) replays canned probe replies for kitty, tmux, xterm and silence, sends Ctrl-Q in legacy mode and checks that a late `APC G` reply types nothing. Real typing of shifted keys under DISAMBIGUATE is checked by hand in kitty (#42).
+End-to-end check: `pawsman` in kitty, over SSH into the matrix box, in tmux there with and without passthrough, and in xterm: splash plays (or is skipped by a key), the placeholder view shows, Ctrl-Q returns a clean shell (`stty -a` unchanged, cursor keys legacy). A PTY test (pty-process plus vt100) replays canned probe replies for kitty, tmux, xterm and silence, sends Ctrl-Q in legacy mode and checks that a late `APC G` reply types nothing. Real typing of shifted keys under DISAMBIGUATE is checked by hand in kitty (#42).
 
 ## 1.2 Thin path
 
@@ -131,7 +134,7 @@ Scope:
 - `pawsman-core::store`: loads the collection tree; writes atomically (`tempfile` in the same directory, then `persist`); creates collections with `pawsman init [DIR]` (writes `pawsman.toml`, `.gitignore` with `.env` and `.pawsman/`).
 - `pawsman-core::watch`: `notify` with a debouncer; reloads changed files; ignores its own writes by content hash; a file that stops parsing becomes an error node.
 - Tree: expand, collapse, new request or folder, rename (file and `name`), delete with confirmation, move up or down (rewrites `order`).
-- `pawsman-core::keys`: every action in the table (action, keys, context, hint), `~/.config/pawsman/keys.toml` overrides, the Cyrillic folding table. The hint bar and the F1 overlay are generated from it.
+- `pawsman-core::keys`: every action in the table (action, keys, context, hint), `~/.config/pawsman/keys.toml` overrides. The hint bar and the F1 overlay are generated from it.
 - Command palette (Ctrl-K): fuzzy search over requests and actions (`nucleo-matcher`).
 
 | Failure | Code | Retry |
@@ -151,7 +154,7 @@ Scope:
 - Line editor for single-line fields (method, URL, header and query rows, form fields): grapheme-aware cursor, word moves, selection, undo.
 - Multi-line editor for bodies with JSON highlighting. Built on tui-textarea if a release supports ratatui 0.30 when the plan is written; otherwise pawsman's own on the line editor's text model.
 - Tabs of the request pane: Params, Headers, Body, Auth (shows "M3"), Capture, Assert, Script (read-only until M2), Docs.
-- Ctrl-E: `Term::suspend` (input thread paused, every mode undone), `$VISUAL` or `$EDITOR` (else `vi`) on the body or the whole request file, `resume`, full redraw; the watcher reloads.
+- Ctrl-E: `Term::suspend` and `resume` (input thread paused, every mode undone and set up again), `$VISUAL` or `$EDITOR` (else `vi`) on the body or the whole request file, `resume`, full redraw; the watcher reloads.
 - Timeline: DNS, connect, TLS, time to first byte, download, each redirect hop; reused connections show as reused.
 
 | Failure | Code | Retry |
@@ -169,7 +172,7 @@ Scope:
 - Body tab: JSON pretty-printed, highlighted, foldable, with a JSONPath filter line (`serde_json_path`, in a new `pawsman-script` crate that M2 extends); XML and HTML re-indented text; plain text; binary as hex; virtual scrolling so a 16 MiB body stays responsive.
 - Images (PNG, JPEG, GIF first frame, WebP): decoded and scaled on the image worker. Kitty through pawsman's own encoder (`term::graphics`: PNG or zlib RGBA, whichever is smaller, 4096-byte chunks, `q=2`, Unicode placeholders, delete on leave and on exit); sixel through ratatui-image without its probe; half blocks; text placeholder when Off.
 - Headers tab; Timeline tab (from 1.5).
-- Selection by keyboard and mouse; Ctrl-C copies it through OSC 52; "copy body" in the palette. Copies above 1 MiB ask first.
+- `Term::copy` (OSC 52, DCS-wrapped in tmux). Selection by keyboard and mouse; Ctrl-C copies it; "copy body" in the palette. Copies above 1 MiB ask first.
 
 | Failure | Code | Retry |
 | --- | --- | --- |
@@ -201,7 +204,7 @@ Each enters with the piece that first needs it, pinned with `=` to the latest re
 
 | Piece | Crates |
 | --- | --- |
-| 1.1 | ratatui 0.30, crossterm 0.29 (`osc52`), tachyonfx 0.25 (`std` only), rustix (`event`, `fs`, `termios`), signal-hook, unicode-width, unicode-segmentation, clap (derive), tracing, tracing-subscriber (`env-filter`), tracing-appender, serde, toml; dev: insta, rstest, portable-pty, vt100 |
+| 1.1 | ratatui 0.30, crossterm 0.29 (`osc52`), tachyonfx 0.25 (`std` only), rustix (`event`, `fs`, `termios`), signal-hook, unicode-width, unicode-segmentation, clap (derive), tracing, tracing-subscriber (`env-filter`), tracing-appender, serde, toml; dev: insta, rstest, pty-process, vt100, fontdue and image (PNG files for the visual check) |
 | 1.2 | tokio (rt, net, time, sync, macros), hyper 1, hyper-util, http, http-body-util, bytes, rustls (`ring`), tokio-rustls, rustls-platform-verifier, async-compression, tempfile, url; dev: wiremock |
 | 1.3 | secrecy, uuid, time, fastrand; dev: proptest |
 | 1.4 | notify, notify-debouncer-full, nucleo-matcher |
