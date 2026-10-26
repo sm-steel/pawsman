@@ -373,12 +373,18 @@ mod tests {
             theirs
         });
 
+        // The late reply lands 20 ms after the timeout, well inside a 200 ms grace.
+        let timeouts = Timeouts {
+            grace: Duration::from_millis(200),
+            ..fast()
+        };
+
         let start = Instant::now();
-        let probed = read_replies(&mut ours, &query(InTmux::No), fast()).unwrap();
+        let probed = read_replies(&mut ours, &query(InTmux::No), timeouts).unwrap();
         let _theirs = late.join().unwrap();
 
         assert!(
-            start.elapsed() >= Duration::from_millis(340),
+            start.elapsed() >= timeouts.reply + timeouts.grace,
             "waited reply + grace: {:?}",
             start.elapsed()
         );
