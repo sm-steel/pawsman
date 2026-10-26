@@ -94,6 +94,7 @@ mod tests {
     #[case::no_host("http:///x")]
     #[case::spaces("http://exa mple.com")]
     #[case::empty("")]
+    #[case::userinfo("http://user:pass@api.example.com/x")]
     fn bad_urls_are_invalid_requests(#[case] url: &str) {
         let err = Outgoing::new("GET", url, &[], None).unwrap_err();
 

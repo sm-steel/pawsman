@@ -112,10 +112,19 @@ impl FakeHttp {
         Self::start_on(0)
     }
 
+    /// Starts on a free port of the IPv6 loopback `::1`.
+    #[must_use]
+    pub fn start_v6() -> Self {
+        Self::bind(std::net::TcpListener::bind(("::1", 0)).unwrap())
+    }
+
     /// Starts on `port` of `127.0.0.1` (0 picks a free one).
     #[must_use]
     pub fn start_on(port: u16) -> Self {
-        let listener = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
+        Self::bind(std::net::TcpListener::bind(("127.0.0.1", port)).unwrap())
+    }
+
+    fn bind(listener: std::net::TcpListener) -> Self {
         let addr = listener.local_addr().unwrap();
         listener.set_nonblocking(true).unwrap();
         let state: Arc<Mutex<State>> = Arc::default();

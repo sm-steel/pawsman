@@ -267,3 +267,64 @@ fn shutdown_cancels_and_joins_quickly() {
         start.elapsed()
     );
 }
+
+#[test]
+fn an_ipv6_literal_url_sends() {
+    let fake = FakeHttp::start_v6();
+    fake.route("GET", "/six", Reply::new(200).body("v6"));
+    let (net, events) = start(NetConfig::new());
+
+    net.send(id(1), get(&fake.url("/six")));
+
+    let NetEvent::Done { response, .. } = next(&events) else {
+        panic!("done: {:?}", fake.url("/six"))
+    };
+    assert_eq!(response.body().preview(), b"v6", "body");
+    let host = fake.received()[0]
+        .headers
+        .iter()
+        .find(|(k, _)| k == "host")
+        .map(|(_, v)| v.clone());
+    assert_eq!(
+        host.as_deref().map(|h| h.starts_with("[::1]:")),
+        Some(true),
+        "host header {host:?}"
+    );
+}
+
+#[test]
+fn a_post_without_a_body_says_content_length_zero() {
+    let fake = FakeHttp::start();
+    fake.route("POST", "/logout", Reply::new(204));
+    let (net, events) = start(NetConfig::new());
+
+    net.send(
+        id(1),
+        Outgoing::new("POST", &fake.url("/logout"), &[], None).unwrap(),
+    );
+    next(&events);
+
+    let headers = &fake.received()[0].headers;
+    assert!(
+        headers.contains(&("content-length".to_owned(), "0".to_owned())),
+        "strict servers answer 411 without it: {headers:?}"
+    );
+}
+
+#[test]
+fn a_get_without_a_body_sends_no_content_length() {
+    let fake = FakeHttp::start();
+    fake.route("GET", "/x", Reply::new(200));
+    let (net, events) = start(NetConfig::new());
+
+    net.send(id(1), get(&fake.url("/x")));
+    next(&events);
+
+    assert!(
+        !fake.received()[0]
+            .headers
+            .iter()
+            .any(|(k, _)| k == "content-length"),
+        "no body, no length on GET"
+    );
+}
