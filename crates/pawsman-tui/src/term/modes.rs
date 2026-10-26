@@ -119,12 +119,16 @@ impl Stack {
 
     /// Undoes every active mode, newest first; errors are ignored, since this runs on the way out.
     pub fn undo_all(&mut self) {
-        let _ = (
-            &mut self.out,
-            &self.raw,
-            tcsetattr::<&OwnedFd>,
-            OptionalActions::Now,
-        );
+        while let Some(mode) = self.active.pop() {
+            if mode == Mode::Raw {
+                if let Some((fd, saved)) = &self.raw {
+                    let _ = tcsetattr(fd, OptionalActions::Now, saved);
+                }
+            } else {
+                let _ = self.out.write_all(mode.off());
+            }
+        }
+        let _ = self.out.flush();
     }
 }
 
