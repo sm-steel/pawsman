@@ -206,6 +206,29 @@ mod tests {
     }
 
     #[test]
+    fn a_stalled_paste_lets_ctrl_q_through() {
+        let mut rig = rig();
+
+        rig.tty.write_all(b"\x1b[200~ab").unwrap();
+        let paste = rig.rx.recv_timeout(Duration::from_secs(3));
+        rig.tty.write_all(b"\x11").unwrap();
+        let quit = next(&rig.rx);
+
+        assert_eq!(
+            paste,
+            Ok(Msg::Input(Input::Paste("ab".to_owned()))),
+            "paste closed by silence"
+        );
+        assert_eq!(
+            quit,
+            Msg::Input(Input::Key(Chord::ctrl('q'))),
+            "Ctrl-Q arrives"
+        );
+        rig.stop.write_all(b"x").unwrap();
+        rig.handle.join().unwrap();
+    }
+
+    #[test]
     fn signals_become_messages() {
         let mut rig = rig();
 

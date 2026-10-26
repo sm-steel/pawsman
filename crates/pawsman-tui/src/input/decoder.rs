@@ -5,7 +5,7 @@
 use pawsman_core::keys::{Chord, KeyCode, Mods};
 use tracing::debug;
 
-use super::{MAX_PASTE, MAX_SEQUENCE};
+use super::{ESC_TIMEOUT, MAX_PASTE, MAX_SEQUENCE, PASTE_TIMEOUT};
 
 const ESC: u8 = 0x1b;
 const PASTE_END: &[u8] = b"\x1b[201~";
@@ -155,6 +155,13 @@ impl Decoder {
             }
         }
         out
+    }
+
+    /// How long a silence ends what is pending: `PASTE_TIMEOUT` inside a paste, else `ESC_TIMEOUT`.
+    #[must_use]
+    pub fn silence(&self) -> std::time::Duration {
+        let _ = PASTE_TIMEOUT;
+        ESC_TIMEOUT
     }
 
     /// Ends whatever is pending after `ESC_TIMEOUT` of silence: a lone `ESC` is the Esc key, any
@@ -600,6 +607,49 @@ mod tests {
             panic!("one paste, got {} inputs", out.len())
         };
         assert_eq!(text.len(), crate::input::MAX_PASTE, "capped");
+    }
+
+    #[test]
+    fn an_unterminated_paste_ends_at_flush_and_keys_work_again() {
+        let mut d = Decoder::new();
+
+        let during = d.feed(b"\x1b[200~ab");
+        let flushed = d.flush();
+        let after = d.feed(b"\x11");
+
+        assert_eq!(during, vec![], "the paste is open");
+        assert_eq!(
+            flushed,
+            vec![Input::Paste("ab".to_owned())],
+            "closed with what arrived"
+        );
+        assert_eq!(
+            after,
+            vec![key(KeyCode::Char('q'), Mods::CTRL)],
+            "Ctrl-Q is a key again"
+        );
+    }
+
+    #[test]
+    fn the_silence_is_longer_inside_a_paste() {
+        let mut d = Decoder::new();
+
+        d.feed(b"\x1b");
+        let escape = d.silence();
+        d.flush();
+        d.feed(b"\x1b[200~a");
+        let paste = d.silence();
+
+        assert_eq!(
+            escape,
+            crate::input::ESC_TIMEOUT,
+            "a lone ESC waits briefly"
+        );
+        assert_eq!(
+            paste,
+            crate::input::PASTE_TIMEOUT,
+            "a paste waits for its end marker"
+        );
     }
 
     #[test]
