@@ -6,5 +6,6 @@ pub mod codes;
 mod error;
 pub mod input;
 pub mod term;
+mod views;
 
 pub use error::TuiError;
