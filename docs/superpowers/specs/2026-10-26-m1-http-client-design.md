@@ -127,6 +127,8 @@ Scope:
 
 End-to-end check: the demo collection gains `envs/dev` and `envs/prod` and a secret in `.env`; switching environments changes the resolved URL, the trace names each scope, and the secret never appears in the log file (a test greps it for the `PAWSMAN_FAKE` value).
 
+Resolved in the plan (each with a line in [DECISIONS](../../DECISIONS.md)): `[vars]` tables hold the request, folder, environment, collection and global scopes; sidecars are referenced as `json = { sidecar = "…" }`; a broken `_folder.toml` makes its requests error entries; `{{env.NAME}}` values are treated as secrets; interpolation stops at 1 MiB per field and 64 levels; unreadable body files are `core::body_file`; no environment is active at start.
+
 ## 1.4 Store, watcher, tree, palette and keys
 
 Scope:
