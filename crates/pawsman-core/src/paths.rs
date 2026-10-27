@@ -53,6 +53,12 @@ impl Paths {
         self.config.join("settings.toml")
     }
 
+    /// `globals.toml` in the config directory.
+    #[must_use]
+    pub fn globals_file(&self) -> PathBuf {
+        self.config.clone()
+    }
+
     /// Where the rolling log goes.
     #[must_use]
     pub fn log_dir(&self) -> &Path {
@@ -92,6 +98,11 @@ mod tests {
             paths.settings_file(),
             Path::new("/cfg/pawsman/settings.toml"),
             "settings file"
+        );
+        assert_eq!(
+            paths.globals_file(),
+            Path::new("/cfg/pawsman/globals.toml"),
+            "globals file"
         );
     }
 

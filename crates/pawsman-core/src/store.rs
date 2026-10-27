@@ -81,6 +81,104 @@ mod tests {
         );
     }
 
+    fn put(dir: &Path, rel: &str, text: &str) {
+        let path = dir.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+
+    fn paths(c: &pawsman_model::Collection) -> Vec<String> {
+        c.entries()
+            .iter()
+            .map(|e| e.path().display().to_string())
+            .collect()
+    }
+
+    const MANIFEST: &str = "format = 1\nname = \"D\"\n";
+    const REQ: &str = "name = \"r\"\nurl = \"http://h\"\n";
+
+    #[test]
+    fn loads_the_tree_with_folders_envs_and_sidecars() {
+        let dir = tempfile::tempdir().unwrap();
+        put(dir.path(), "pawsman.toml", MANIFEST);
+        put(dir.path(), "users/_folder.toml", "name = \"Users\"\n");
+        put(
+            dir.path(),
+            "users/create.req.toml",
+            "name = \"c\"\nurl = \"u\"\n[body]\njson = { sidecar = \"create.body.json\" }\n",
+        );
+        put(dir.path(), "users/create.body.json", "{}");
+        put(
+            dir.path(),
+            "envs/dev.env.toml",
+            "[vars]\nbase = \"http://d\"\n",
+        );
+
+        let c = load(dir.path()).unwrap();
+
+        assert_eq!(paths(&c), ["users/create.req.toml"], "nested request");
+        assert!(
+            matches!(c.entries()[0].kind(), EntryKind::Request(_)),
+            "sidecar found: {:?}",
+            c.entries()[0].kind()
+        );
+        assert_eq!(c.environments().len(), 1, "environment");
+        assert_eq!(c.chain(c.entries()[0].id()).len(), 2, "root and users");
+    }
+
+    #[test]
+    fn dotenv_is_read() {
+        let dir = tempfile::tempdir().unwrap();
+        put(dir.path(), "pawsman.toml", MANIFEST);
+        put(dir.path(), ".env", "token=abc\n");
+
+        let c = load(dir.path()).unwrap();
+
+        assert_eq!(c.dotenv().len(), 1, "values");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_dirs_and_hidden_dirs_are_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        put(dir.path(), "pawsman.toml", MANIFEST);
+        put(dir.path(), "a.req.toml", REQ);
+        put(dir.path(), ".git/x.req.toml", REQ);
+        put(dir.path(), ".pawsman/y.req.toml", REQ);
+        put(dir.path(), "node_modules/z.req.toml", REQ);
+        put(dir.path(), "target/t.req.toml", REQ);
+        std::os::unix::fs::symlink(dir.path(), dir.path().join("loop")).unwrap();
+
+        let c = load(dir.path()).unwrap();
+
+        assert_eq!(paths(&c), ["a.req.toml"], "only the real request");
+    }
+
+    #[test]
+    fn depth_is_capped() {
+        let dir = tempfile::tempdir().unwrap();
+        put(dir.path(), "pawsman.toml", MANIFEST);
+        let mut rel = String::new();
+        for level in 0..20 {
+            rel.push_str(&format!("d{level}/"));
+            put(dir.path(), &format!("{rel}r.req.toml"), REQ);
+        }
+        let started = std::time::Instant::now();
+
+        let c = load(dir.path()).unwrap();
+
+        assert_eq!(
+            c.entries().len(),
+            16,
+            "levels 1 to 16 load: {:?}",
+            paths(&c)
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "fast"
+        );
+    }
+
     #[test]
     fn a_directory_without_a_manifest_is_not_a_collection() {
         let dir = tempfile::tempdir().unwrap();
