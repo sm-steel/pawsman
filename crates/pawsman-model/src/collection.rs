@@ -512,6 +512,35 @@ mod tests {
     }
 
     #[test]
+    fn chain_follows_the_right_sibling_folder() {
+        let c = build(&[
+            ("pawsman.toml", MANIFEST.as_bytes()),
+            ("a/_folder.toml", b"[auth]\ntype = \"bearer\"\n"),
+            ("a/x.req.toml", req("x").as_bytes()),
+            ("b/y.req.toml", req("y").as_bytes()),
+        ])
+        .unwrap();
+
+        let paths: Vec<_> = c
+            .chain(RequestId::new(2))
+            .iter()
+            .map(|f| f.path().to_owned())
+            .collect();
+        assert_eq!(
+            paths,
+            [PathBuf::new(), PathBuf::from("b")],
+            "b's request, not a's folder"
+        );
+        assert!(
+            c.chain(RequestId::new(1))
+                .get(1)
+                .and_then(|f| f.auth())
+                .is_some(),
+            "folder auth kept"
+        );
+    }
+
+    #[test]
     fn a_broken_folder_file_invalidates_its_requests() {
         let c = build(&[
             ("pawsman.toml", MANIFEST.as_bytes()),

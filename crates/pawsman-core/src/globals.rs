@@ -67,6 +67,19 @@ mod tests {
     }
 
     #[test]
+    fn an_unreadable_globals_file_is_globals_invalid() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let err = load(dir.path()).unwrap_err();
+
+        assert_eq!(
+            err.code(),
+            crate::codes::GLOBALS_INVALID,
+            "a directory is not a file"
+        );
+    }
+
+    #[test]
     fn bad_globals_are_globals_invalid() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("globals.toml");

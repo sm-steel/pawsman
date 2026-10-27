@@ -1,6 +1,6 @@
 //! The files a collection is built from, as the store read them.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// One file of a collection: its path relative to the root (with `/` separators) and its bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -16,19 +16,7 @@ impl SourceFile {
         Self { path, bytes }
     }
 
-    /// The path relative to the collection root.
-    #[must_use]
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
     pub(crate) fn into_parts(self) -> (PathBuf, Vec<u8>) {
         (self.path, self.bytes)
-    }
-
-    /// The contents.
-    #[must_use]
-    pub fn bytes(&self) -> &[u8] {
-        &self.bytes
     }
 }

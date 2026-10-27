@@ -22,13 +22,6 @@ impl Redactor {
         Self { secrets }
     }
 
-    /// Adds the secrets of `other`.
-    pub fn extend(&mut self, other: &Self) {
-        let mut all = std::mem::take(&mut self.secrets);
-        all.extend(other.secrets.iter().cloned());
-        *self = Self::new(all);
-    }
-
     /// `text` with every secret, raw or percent-encoded, replaced by `***`.
     #[must_use]
     pub fn redact<'a>(&self, text: &'a str) -> Cow<'a, str> {

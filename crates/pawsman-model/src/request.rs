@@ -353,6 +353,28 @@ post = "b"
     }
 
     #[test]
+    fn any_m2_table_alone_counts() {
+        for tail in [
+            "[[capture]]\nvar = \"e\"\n",
+            "[[assert]]\nexpr = \"x\"\n",
+            "[script]\npre = \"x\"\n",
+        ] {
+            let r = parse(&format!("name = \"x\"\nurl = \"u\"\n{tail}"), "x").unwrap();
+            assert!(r.has_m2_parts(), "{tail:?}");
+        }
+        let r = parse(
+            "name = \"x\"\nurl = \"u\"\n[[capture]]\nvar = \"e\"\n[[assert]]\nexpr = \"x\"\n",
+            "x",
+        )
+        .unwrap();
+        assert_eq!(
+            (r.captures().len(), r.asserts().len()),
+            (1, 1),
+            "kept apart"
+        );
+    }
+
+    #[test]
     fn form_multipart_and_file_bodies() {
         let form = parse(
             "name = \"f\"\nurl = \"u\"\n[body.form]\nb = \"2\"\na = \"1\"\n",

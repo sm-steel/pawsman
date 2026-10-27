@@ -544,6 +544,42 @@ mod tests {
     }
 
     #[test]
+    fn preview_describes_every_body_kind() {
+        let files = [
+            (
+                "a.req.toml",
+                "name = \"A\"\nmethod = \"post\"\nurl = \"http://h\"\n[body.form]\nq = \"a b\"\n",
+            ),
+            (
+                "b.req.toml",
+                "name = \"B\"\nurl = \"http://h\"\n[[body.multipart]]\nname = \"n\"\nvalue = \"v\"\n[[body.multipart]]\nname = \"f\"\nfile = \"up.png\"\n",
+            ),
+            (
+                "c.req.toml",
+                "name = \"C\"\nurl = \"http://h\"\n[body]\nfile = \"up.bin\"\n[[capture]]\nvar = \"x\"\n",
+            ),
+        ];
+        let s = AppState::new(Ok(collection(&files)), Context::default()).snapshot();
+        let preview = |n| s.preview(id(n)).unwrap().unwrap();
+
+        assert_eq!(
+            (preview(1).method(), preview(1).body_text()),
+            ("POST", Some("q=a+b"))
+        );
+        assert_eq!(
+            preview(2).body_text(),
+            Some("n: v\nf: @up.png"),
+            "multipart"
+        );
+        assert_eq!(preview(3).body_text(), Some("@up.bin"), "file");
+        assert!(
+            preview(3).has_m2_parts() && !preview(1).has_m2_parts(),
+            "m2 parts"
+        );
+        assert!(preview(1).trace().entries().is_empty(), "no variables");
+    }
+
+    #[test]
     fn collection_issues_become_notices() {
         let mut s = AppState::new(
             Ok(collection(&[(".env", "bad line\n")])),

@@ -125,6 +125,19 @@ mod tests {
     }
 
     #[test]
+    fn bad_keys_and_text_after_quotes_are_issues() {
+        for line in ["=value", "bad key=1", "A='x' junk", "B=\"x\" junk"] {
+            let (pairs, issues) = parse(line, Path::new(".env"));
+            assert!(
+                pairs.is_empty() && issues.len() == 1,
+                "{line:?}: {issues:?}"
+            );
+        }
+        let (pairs, _) = parse("A='x' # comment", Path::new(".env"));
+        assert_eq!(pairs.len(), 1, "a comment after a quote is fine");
+    }
+
+    #[test]
     fn a_bad_dotenv_line_names_the_line_not_the_value() {
         let (pairs, issues) = parse(
             "A=1\nthis-is-a-secret-without-equals\nB=\"opensesame\n",
