@@ -23,7 +23,11 @@ fn the_demo_collection_loads_with_one_deliberately_broken_file() {
         .collect();
     assert_eq!(broken, ["misc/broken.req.toml"], "only the deliberate one");
     assert!(c.issues().is_empty(), "{:?}", c.issues());
-    let envs: Vec<&str> = c.environments().iter().map(|e| e.name()).collect();
+    let envs: Vec<&str> = c
+        .environments()
+        .iter()
+        .map(pawsman_model::Environment::name)
+        .collect();
     assert_eq!(envs, ["dev", "prod"], "environments");
     assert_eq!(c.dotenv().len(), 1, "the placeholder token");
 }
