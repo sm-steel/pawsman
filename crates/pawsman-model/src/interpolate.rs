@@ -1,12 +1,25 @@
 //! Resolving a request's `{{…}}` templates from its scopes: a pure function returning the request
 //! as it goes on the wire and a trace of where each value came from.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
+
+use secrecy::{ExposeSecret, SecretString};
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 
 use crate::redact::Redactor;
-use crate::scope::Scopes;
-use crate::trace::Trace;
+use crate::request::{Body, Content, PartData};
+use crate::scope::{Binding, BuiltinMode, Scopes, Source};
+use crate::template::{self, Segment, VarName};
+use crate::trace::{Field, Trace, TraceEntry, TraceValue};
 use crate::{Folder, Manifest, ModelError, Request};
+
+/// A field may not grow past this many bytes.
+const MAX_FIELD: usize = 1 << 20;
+/// Variables may not nest deeper than this.
+const MAX_DEPTH: usize = 64;
 
 /// A request with every template resolved.
 #[derive(Debug, Clone)]
@@ -139,8 +152,296 @@ pub fn interpolate(
     collection: &Manifest,
     scopes: &Scopes,
 ) -> Result<(ResolvedRequest, Trace), ModelError> {
-    let _ = (request, chain, collection, scopes);
-    Err(ModelError::unknown_var("todo", "todo"))
+    let mut r = Resolver::new(scopes);
+    let url = r.field(&Field::Url, request.url())?;
+    let mut headers = Vec::new();
+    for (name, value) in merged_headers(request, chain, collection) {
+        let name_out = r.field(&Field::HeaderName(name.clone()), &name)?;
+        let value_out = r.field(&Field::HeaderValue(name), &value)?;
+        headers.push((name_out, value_out));
+    }
+    let mut query = Vec::new();
+    for (key, values) in request.query() {
+        let key_out = r.field(&Field::QueryKey(key.clone()), key)?;
+        for value in values {
+            query.push((
+                key_out.clone(),
+                r.field(&Field::QueryValue(key.clone()), value)?,
+            ));
+        }
+    }
+    let body = request.body().map(|b| r.body(b)).transpose()?;
+    let base_dir = chain
+        .last()
+        .map_or_else(PathBuf::new, |f| f.path().to_owned());
+    let resolved = ResolvedRequest {
+        method: request.method().to_owned(),
+        url,
+        headers,
+        query,
+        body,
+        redactor: Redactor::new(r.secrets),
+        base_dir,
+    };
+    Ok((resolved, Trace { entries: r.trace }))
+}
+
+/// Collection, then folders root first, then request headers; a later header replaces an
+/// earlier one of the same name (any case) in place.
+fn merged_headers(
+    request: &Request,
+    chain: &[&Folder],
+    collection: &Manifest,
+) -> Vec<(String, String)> {
+    let mut merged: Vec<(String, String)> = Vec::new();
+    let levels = std::iter::once(collection.headers())
+        .chain(chain.iter().map(|f| f.headers()))
+        .chain(std::iter::once(request.headers()));
+    for (name, value) in levels.flatten() {
+        match merged
+            .iter_mut()
+            .find(|(n, _)| n.eq_ignore_ascii_case(name))
+        {
+            Some(slot) => *slot = (name.clone(), value.clone()),
+            None => merged.push((name.clone(), value.clone())),
+        }
+    }
+    merged
+}
+
+/// A variable's resolved value; `secret` when it holds a secret anywhere inside.
+#[derive(Clone)]
+struct Value {
+    text: String,
+    secret: bool,
+}
+
+struct Resolver<'a> {
+    scopes: &'a Scopes,
+    stack: Vec<String>,
+    memo: BTreeMap<String, Value>,
+    trace: Vec<TraceEntry>,
+    secrets: Vec<SecretString>,
+    rng: fastrand::Rng,
+}
+
+impl<'a> Resolver<'a> {
+    fn new(scopes: &'a Scopes) -> Self {
+        let seed = match scopes.builtins.0 {
+            BuiltinMode::Live { seed, .. } => seed,
+            BuiltinMode::Preview => 0,
+        };
+        Self {
+            scopes,
+            stack: Vec::new(),
+            memo: BTreeMap::new(),
+            trace: Vec::new(),
+            secrets: Vec::new(),
+            rng: fastrand::Rng::with_seed(seed),
+        }
+    }
+
+    fn field(&mut self, field: &Field, text: &str) -> Result<String, ModelError> {
+        self.expand(field, text, 0).map(|v| v.text)
+    }
+
+    fn body(&mut self, body: &Body) -> Result<ResolvedBody, ModelError> {
+        Ok(match body {
+            Body::Json(Content::Utf8(text)) => ResolvedBody::Json(self.field(&Field::Body, text)?),
+            Body::Text(Content::Utf8(text)) => ResolvedBody::Text(self.field(&Field::Body, text)?),
+            Body::Json(Content::Binary(bytes)) | Body::Text(Content::Binary(bytes)) => {
+                ResolvedBody::Binary(bytes.clone())
+            }
+            Body::Form(pairs) => ResolvedBody::Form(
+                pairs
+                    .iter()
+                    .map(|(k, v)| Ok((self.field(&Field::Body, k)?, self.field(&Field::Body, v)?)))
+                    .collect::<Result<_, ModelError>>()?,
+            ),
+            Body::Multipart(parts) => ResolvedBody::Multipart(
+                parts
+                    .iter()
+                    .map(|p| {
+                        let value = match &p.data {
+                            PartData::Text(text) => {
+                                PartSource::Text(self.field(&Field::Body, text)?)
+                            }
+                            PartData::File(path) => PartSource::File(path.clone()),
+                        };
+                        Ok(ResolvedPart {
+                            name: p.name.clone(),
+                            value,
+                            content_type: p.content_type.clone(),
+                        })
+                    })
+                    .collect::<Result<_, ModelError>>()?,
+            ),
+            Body::File(path) => ResolvedBody::File(path.clone()),
+        })
+    }
+
+    fn expand(&mut self, field: &Field, text: &str, depth: usize) -> Result<Value, ModelError> {
+        let label = field.to_string();
+        let parsed = template::parse(text).map_err(|e| ModelError::bad_template(&label, &e))?;
+        let mut out = Value {
+            text: String::new(),
+            secret: false,
+        };
+        for segment in parsed.segments() {
+            match segment {
+                Segment::Literal(literal) => out.text.push_str(literal),
+                Segment::Var { name, span } => {
+                    let slot = self.trace.len();
+                    let (value, source) = self.var(*name, &label, depth)?;
+                    self.trace.insert(
+                        slot,
+                        TraceEntry {
+                            field: field.clone(),
+                            span: span.clone(),
+                            name: written(*name),
+                            source,
+                            value: if value.secret {
+                                TraceValue::Secret
+                            } else {
+                                TraceValue::Plain(value.text.clone())
+                            },
+                        },
+                    );
+                    out.text.push_str(&value.text);
+                    out.secret |= value.secret;
+                }
+            }
+            if out.text.len() > MAX_FIELD {
+                return Err(ModelError::runaway_template(
+                    &label,
+                    "expands to more than 1 MiB",
+                ));
+            }
+        }
+        Ok(out)
+    }
+
+    fn var(
+        &mut self,
+        name: VarName<'_>,
+        label: &str,
+        depth: usize,
+    ) -> Result<(Value, Source), ModelError> {
+        match name {
+            VarName::Builtin(builtin) => Ok((self.builtin(builtin, label)?, Source::Builtin)),
+            VarName::Env(key) => {
+                let value = self
+                    .scopes
+                    .process
+                    .as_ref()
+                    .and_then(|lookup| lookup(key))
+                    .ok_or_else(|| ModelError::unknown_var(&format!("env.{key}"), label))?;
+                self.secrets.push(SecretString::from(value.clone()));
+                Ok((
+                    Value {
+                        text: value,
+                        secret: true,
+                    },
+                    Source::Process,
+                ))
+            }
+            VarName::Plain(key) => self.plain(key, label, depth),
+        }
+    }
+
+    fn plain(
+        &mut self,
+        key: &str,
+        label: &str,
+        depth: usize,
+    ) -> Result<(Value, Source), ModelError> {
+        let (source, binding) = self
+            .scopes
+            .find(key)
+            .ok_or_else(|| ModelError::unknown_var(key, label))?;
+        let source = source.clone();
+        if let Some(value) = self.memo.get(key) {
+            return Ok((value.clone(), source));
+        }
+        if let Some(start) = self.stack.iter().position(|n| n == key) {
+            let mut chain: Vec<String> = self.stack.get(start..).unwrap_or_default().to_vec();
+            chain.push(key.to_owned());
+            return Err(ModelError::var_cycle(chain));
+        }
+        if depth >= MAX_DEPTH {
+            return Err(ModelError::runaway_template(
+                label,
+                "nested more than 64 deep",
+            ));
+        }
+        let value = match binding {
+            Binding::Plain(text) => {
+                let text = text.clone();
+                self.stack.push(key.to_owned());
+                let value = self.expand(&Field::Var(key.to_owned()), &text, depth + 1);
+                self.stack.pop();
+                value?
+            }
+            Binding::Secret(Some(secret)) => {
+                self.secrets.push(secret.clone());
+                Value {
+                    text: secret.expose_secret().to_owned(),
+                    secret: true,
+                }
+            }
+            Binding::Secret(None) => {
+                let env = match &source {
+                    Source::Environment(env) => env.clone(),
+                    other => other.to_string(),
+                };
+                return Err(ModelError::missing_secret(key, &env));
+            }
+        };
+        self.memo.insert(key.to_owned(), value.clone());
+        Ok((value, source))
+    }
+
+    fn builtin(&mut self, name: &str, label: &str) -> Result<Value, ModelError> {
+        let known = matches!(name, "uuid" | "timestamp" | "isoDate" | "randomInt");
+        if !known {
+            return Err(ModelError::unknown_var(&format!("${name}"), label));
+        }
+        let text = match self.scopes.builtins.0 {
+            BuiltinMode::Preview => format!("‹{name}›"),
+            BuiltinMode::Live { now, .. } => match name {
+                "uuid" => {
+                    let mut bytes = [0u8; 16];
+                    self.rng.fill(&mut bytes);
+                    uuid::Builder::from_random_bytes(bytes)
+                        .into_uuid()
+                        .to_string()
+                }
+                "timestamp" => now
+                    .duration_since(UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs())
+                    .to_string(),
+                "isoDate" => OffsetDateTime::from(now)
+                    .replace_nanosecond(0)
+                    .ok()
+                    .and_then(|t| t.format(&Rfc3339).ok())
+                    .unwrap_or_default(),
+                _ => self.rng.u32(0..=1000).to_string(),
+            },
+        };
+        Ok(Value {
+            text,
+            secret: false,
+        })
+    }
+}
+
+/// The name as the user wrote it.
+fn written(name: VarName<'_>) -> String {
+    match name {
+        VarName::Plain(n) => n.to_owned(),
+        VarName::Env(n) => format!("env.{n}"),
+        VarName::Builtin(n) => format!("${n}"),
+    }
 }
 
 #[cfg(test)]
@@ -183,7 +484,7 @@ mod tests {
     }
 
     fn now() -> SystemTime {
-        UNIX_EPOCH + Duration::from_secs(1_800_000_000)
+        UNIX_EPOCH + Duration::from_hours(500_000)
     }
 
     fn scopes() -> Scopes {

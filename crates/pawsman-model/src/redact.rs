@@ -2,7 +2,7 @@
 
 use std::borrow::Cow;
 
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 
 /// The secret values one request used, and how to hide them.
 #[derive(Debug, Clone, Default)]
@@ -14,20 +14,44 @@ impl Redactor {
     /// A redactor for `values`; empty values are ignored.
     #[must_use]
     pub fn new(values: Vec<SecretString>) -> Self {
-        let _ = values;
-        Self::default()
+        let mut secrets: Vec<SecretString> = values
+            .into_iter()
+            .filter(|v| !v.expose_secret().is_empty())
+            .collect();
+        secrets.sort_by_key(|v| std::cmp::Reverse(v.expose_secret().len()));
+        Self { secrets }
+    }
+
+    /// Adds the secrets of `other`.
+    pub fn extend(&mut self, other: &Self) {
+        let mut all = std::mem::take(&mut self.secrets);
+        all.extend(other.secrets.iter().cloned());
+        *self = Self::new(all);
     }
 
     /// `text` with every secret, raw or percent-encoded, replaced by `***`.
     #[must_use]
     pub fn redact<'a>(&self, text: &'a str) -> Cow<'a, str> {
-        Cow::Borrowed(text)
+        self.replace(text, "***")
     }
 
     /// `text` with every secret replaced by `••••••`, for the screen.
     #[must_use]
     pub fn mask<'a>(&self, text: &'a str) -> Cow<'a, str> {
-        Cow::Borrowed(text)
+        self.replace(text, "••••••")
+    }
+
+    fn replace<'a>(&self, text: &'a str, with: &str) -> Cow<'a, str> {
+        let mut out = Cow::Borrowed(text);
+        for secret in &self.secrets {
+            let raw = secret.expose_secret();
+            for form in [raw.to_owned(), encode_query(raw), encode_form(raw)] {
+                if out.contains(form.as_str()) {
+                    out = Cow::Owned(out.replace(form.as_str(), with));
+                }
+            }
+        }
+        out
     }
 
     /// No secrets to hide.
@@ -40,13 +64,38 @@ impl Redactor {
 /// Percent-encodes `s` for a URL query: everything but `A-Za-z0-9-._~` becomes `%XX`.
 #[must_use]
 pub fn encode_query(s: &str) -> String {
-    s.to_owned()
+    encode(s, Space::Percent)
 }
 
 /// Encodes `s` for `application/x-www-form-urlencoded`: as [`encode_query`], with `+` for space.
 #[must_use]
 pub fn encode_form(s: &str) -> String {
-    s.to_owned()
+    encode(s, Space::Plus)
+}
+
+/// How a space is encoded.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Space {
+    Percent,
+    Plus,
+}
+
+fn encode(s: &str, space: Space) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::with_capacity(s.len());
+    for byte in s.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(char::from(byte));
+            }
+            b' ' if space == Space::Plus => out.push('+'),
+            _ => {
+                let _ = write!(out, "%{byte:02X}");
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
