@@ -10,6 +10,9 @@ use super::main::ACCENT;
 use super::response::sanitize;
 use super::splash::BG;
 
+/// The inside of the sidebar, so the box hides the rows it covers completely.
+const MIN_WIDTH: usize = 26;
+
 /// One row of the picker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Item {
@@ -43,7 +46,8 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, items: &[Item], highlighted: u
         .max()
         .unwrap_or(0)
         .max(" Environment ".len())
-        .saturating_add(4);
+        .saturating_add(4)
+        .max(MIN_WIDTH);
     let height = lines.len().saturating_add(2);
     let rect = Rect {
         x: area.x.saturating_add(1),
