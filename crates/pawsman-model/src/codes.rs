@@ -6,9 +6,11 @@ use pawsman_error::ErrorCode;
 pub const NOT_A_COLLECTION: ErrorCode = ErrorCode::new("model::not_a_collection");
 /// A collection or request file is not valid.
 pub const INVALID_FILE: ErrorCode = ErrorCode::new("model::invalid_file");
+/// A `{{…}}` template does not parse.
+pub const BAD_TEMPLATE: ErrorCode = ErrorCode::new("model::bad_template");
 
 /// Every code, for the registry test.
-pub const ALL: &[ErrorCode] = &[NOT_A_COLLECTION, INVALID_FILE];
+pub const ALL: &[ErrorCode] = &[NOT_A_COLLECTION, INVALID_FILE, BAD_TEMPLATE];
 
 #[cfg(test)]
 mod tests {

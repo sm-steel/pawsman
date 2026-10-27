@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use pawsman_error::{ErrorCode, ErrorInfo};
 
 use crate::codes;
+use crate::template::TemplateError;
 
 /// An error from `pawsman-model`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,8 +18,18 @@ pub struct ModelError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Kind {
-    NotACollection { dir: PathBuf },
-    InvalidFile { path: PathBuf, reason: String },
+    NotACollection {
+        dir: PathBuf,
+    },
+    InvalidFile {
+        path: PathBuf,
+        reason: String,
+    },
+    BadTemplate {
+        field: String,
+        at: usize,
+        reason: &'static str,
+    },
 }
 
 impl ModelError {
@@ -43,6 +54,18 @@ impl ModelError {
         }
     }
 
+    /// `field` holds a template that does not parse.
+    #[must_use]
+    pub fn bad_template(field: &str, err: &TemplateError) -> Self {
+        Self {
+            kind: Kind::BadTemplate {
+                field: field.to_owned(),
+                at: err.span.start,
+                reason: err.reason,
+            },
+        }
+    }
+
     /// `path` cannot be read.
     #[must_use]
     pub fn unreadable(path: &Path, err: &std::io::Error) -> Self {
@@ -57,6 +80,9 @@ impl fmt::Display for ModelError {
             Kind::InvalidFile { path, reason } => {
                 write!(f, "`{}` is not valid: {reason}", path.display())
             }
+            Kind::BadTemplate { field, at, reason } => {
+                write!(f, "`{field}` has a bad template at {at}: {reason}")
+            }
         }
     }
 }
@@ -68,6 +94,7 @@ impl ErrorInfo for ModelError {
         match self.kind {
             Kind::NotACollection { .. } => codes::NOT_A_COLLECTION,
             Kind::InvalidFile { .. } => codes::INVALID_FILE,
+            Kind::BadTemplate { .. } => codes::BAD_TEMPLATE,
         }
     }
 
@@ -77,6 +104,9 @@ impl ErrorInfo for ModelError {
                 "Open a directory with a `pawsman.toml`, or create one with `format = 1`."
             }
             Kind::InvalidFile { .. } => "Fix the file; the other requests still work.",
+            Kind::BadTemplate { .. } => {
+                "Close every `{{` with `}}`, or write `\\{{` for a literal `{{`."
+            }
         }))
     }
 }

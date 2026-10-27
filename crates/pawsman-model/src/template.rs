@@ -55,15 +55,71 @@ impl<'a> Template<'a> {
 ///
 /// An unterminated `{{`, empty braces, or a bad character in a name.
 pub fn parse(text: &str) -> Result<Template<'_>, TemplateError> {
-    let _ = text;
-    Ok(Template(vec![]))
+    let mut segments = Vec::new();
+    let mut literal = String::new();
+    let mut pos = 0;
+    while let Some(found) = text.get(pos..).and_then(|rest| rest.find("{{")) {
+        let open = pos + found;
+        let before = text.get(pos..open).unwrap_or_default();
+        if let Some(kept) = before.strip_suffix('\\') {
+            literal.push_str(kept);
+            literal.push_str("{{");
+            pos = open + 2;
+            continue;
+        }
+        literal.push_str(before);
+        let close = text
+            .get(open + 2..)
+            .and_then(|rest| rest.find("}}"))
+            .map(|n| open + 2 + n)
+            .ok_or(TemplateError {
+                span: open..text.len(),
+                reason: "unterminated `{{`",
+            })?;
+        let span = open..close + 2;
+        let name = name(text.get(open + 2..close).unwrap_or_default(), &span)?;
+        if !literal.is_empty() {
+            segments.push(Segment::Literal(Cow::Owned(std::mem::take(&mut literal))));
+        }
+        segments.push(Segment::Var { name, span });
+        pos = close + 2;
+    }
+    literal.push_str(text.get(pos..).unwrap_or_default());
+    if !literal.is_empty() {
+        segments.push(Segment::Literal(Cow::Owned(literal)));
+    }
+    Ok(Template(segments))
 }
 
-/// Whether `text` references any variable.
+fn name<'a>(inner: &'a str, span: &Range<usize>) -> Result<VarName<'a>, TemplateError> {
+    let fail = |reason| TemplateError {
+        span: span.clone(),
+        reason,
+    };
+    let inner = inner.trim();
+    if inner.is_empty() {
+        return Err(fail("empty variable"));
+    }
+    let (name, bare) = if let Some(rest) = inner.strip_prefix('$') {
+        (VarName::Builtin(rest), rest)
+    } else if let Some(rest) = inner.strip_prefix("env.") {
+        (VarName::Env(rest), rest)
+    } else {
+        (VarName::Plain(inner), inner)
+    };
+    let valid = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-');
+    if bare.is_empty() || !bare.chars().all(valid) {
+        return Err(fail("bad character in a variable name"));
+    }
+    Ok(name)
+}
+
+/// Whether `text` references any variable; a broken template counts.
 #[must_use]
 pub fn has_vars(text: &str) -> bool {
-    let _ = text;
-    false
+    parse(text).map_or(true, |t| {
+        t.0.iter().any(|s| matches!(s, Segment::Var { .. }))
+    })
 }
 
 #[cfg(test)]
