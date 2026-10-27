@@ -29,6 +29,10 @@ enum Kind {
         path: PathBuf,
         format: u32,
     },
+    MissingSidecar {
+        path: PathBuf,
+        name: String,
+    },
     BadTemplate {
         field: String,
         at: usize,
@@ -69,6 +73,17 @@ impl ModelError {
         }
     }
 
+    /// The request at `path` names the sidecar `name`, which does not exist.
+    #[must_use]
+    pub fn missing_sidecar(path: &Path, name: &str) -> Self {
+        Self {
+            kind: Kind::MissingSidecar {
+                path: path.to_owned(),
+                name: name.to_owned(),
+            },
+        }
+    }
+
     /// `field` holds a template that does not parse.
     #[must_use]
     pub fn bad_template(field: &str, err: &TemplateError) -> Self {
@@ -101,6 +116,11 @@ impl fmt::Display for ModelError {
                 path.display(),
                 crate::format::CURRENT
             ),
+            Kind::MissingSidecar { path, name } => write!(
+                f,
+                "`{}` names the body file `{name}`, which does not exist",
+                path.display()
+            ),
             Kind::BadTemplate { field, at, reason } => {
                 write!(f, "`{field}` has a bad template at {at}: {reason}")
             }
@@ -116,6 +136,7 @@ impl ErrorInfo for ModelError {
             Kind::NotACollection { .. } => codes::NOT_A_COLLECTION,
             Kind::InvalidFile { .. } => codes::INVALID_FILE,
             Kind::FormatTooNew { .. } => codes::FORMAT_TOO_NEW,
+            Kind::MissingSidecar { .. } => codes::MISSING_SIDECAR,
             Kind::BadTemplate { .. } => codes::BAD_TEMPLATE,
         }
     }
@@ -128,6 +149,9 @@ impl ErrorInfo for ModelError {
             Kind::InvalidFile { .. } => "Fix the file; the other requests still work.",
             Kind::FormatTooNew { .. } => {
                 "Update pawsman; this collection was written by a newer version."
+            }
+            Kind::MissingSidecar { .. } => {
+                "Restore the body file next to the request, or put the body inline."
             }
             Kind::BadTemplate { .. } => {
                 "Close every `{{` with `}}`, or write `\\{{` for a literal `{{`."

@@ -56,7 +56,7 @@ pub(crate) fn draw(
                     Span::raw(sanitize(value)),
                 ]));
             }
-            if let Some(body) = r.body() {
+            if let Some(body) = r.body_text() {
                 lines.push(Line::default());
                 lines.extend(sanitize(body).lines().map(|l| Line::raw(l.to_owned())));
             }

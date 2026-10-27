@@ -27,7 +27,7 @@ pub struct Entry {
 #[non_exhaustive]
 pub enum EntryKind {
     /// A valid request.
-    Request(Request),
+    Request(Box<Request>),
     /// A file that does not parse; shown as an error node.
     Invalid(ModelError),
 }
@@ -52,7 +52,7 @@ impl Collection {
             .zip(files)
             .map(|(n, (path, text))| {
                 let kind = match Request::parse(&text, &path, &|_| None) {
-                    Ok(request) => EntryKind::Request(request),
+                    Ok(request) => EntryKind::Request(Box::new(request)),
                     Err(err) => EntryKind::Invalid(err),
                 };
                 Entry {
@@ -100,7 +100,7 @@ impl Collection {
             .iter()
             .find(|e| e.id == id)
             .and_then(|e| match &e.kind {
-                EntryKind::Request(request) => Some(request),
+                EntryKind::Request(request) => Some(&**request),
                 EntryKind::Invalid(_) => None,
             })
     }

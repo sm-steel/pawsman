@@ -7,10 +7,12 @@ use std::path::Path;
 
 use serde::Deserialize;
 
+use body::BodyFile;
 pub use body::{Body, Content, Part, PartValue};
 pub(crate) use body::{PartData, Sidecars};
 
 use crate::ModelError;
+use crate::manifest::strings;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -19,14 +21,22 @@ struct RequestFile {
     kind: Option<String>,
     method: Option<String>,
     url: String,
+    docs: Option<String>,
     headers: Option<toml::Table>,
+    query: Option<toml::Table>,
+    vars: Option<toml::Table>,
     body: Option<BodyFile>,
+    auth: Option<toml::Table>,
+    capture: Option<Vec<toml::Table>>,
+    assert: Option<Vec<toml::Table>>,
+    script: Option<ScriptFile>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct BodyFile {
-    text: String,
+struct ScriptFile {
+    pre: Option<String>,
+    post: Option<String>,
 }
 
 /// A request's id within its collection.
@@ -45,6 +55,37 @@ impl fmt::Display for RequestId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "#{}", self.0)
     }
+}
+
+/// `[query]`: each value a string or an array of strings.
+fn query(
+    table: Option<toml::Table>,
+    path: &Path,
+) -> Result<Vec<(String, Vec<String>)>, ModelError> {
+    let bad = |key: &str| {
+        ModelError::invalid_file(
+            path,
+            &format!("`query.{key}` must be a string or an array of strings"),
+        )
+    };
+    table
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(key, value)| {
+            let values = match value {
+                toml::Value::String(v) => vec![v],
+                toml::Value::Array(items) => items
+                    .into_iter()
+                    .map(|item| match item {
+                        toml::Value::String(v) => Ok(v),
+                        _ => Err(bad(&key)),
+                    })
+                    .collect::<Result<_, _>>()?,
+                _ => return Err(bad(&key)),
+            };
+            Ok((key, values))
+        })
+        .collect()
 }
 
 /// A parsed request.
@@ -93,7 +134,6 @@ impl Request {
     /// `model::invalid_file` for bad TOML, unknown keys, a kind other than `http`, or a header
     /// value that is not a string.
     pub fn parse(text: &str, path: &Path, sidecar: Sidecars<'_>) -> Result<Self, ModelError> {
-        let _ = sidecar;
         let file: RequestFile =
             toml::from_str(text).map_err(|e| ModelError::invalid_file(path, e.message()))?;
         if let Some(kind) = file.kind.as_deref()
@@ -104,31 +144,24 @@ impl Request {
                 &format!("kind `{kind}` is not supported yet; only `http`"),
             ));
         }
-        let mut headers = Vec::new();
-        for (name, value) in file.headers.unwrap_or_default() {
-            let toml::Value::String(value) = value else {
-                return Err(ModelError::invalid_file(
-                    path,
-                    &format!("header `{name}` must be a string"),
-                ));
-            };
-            headers.push((name, value));
-        }
         Ok(Self {
             name: file.name,
             method: file
                 .method
                 .map_or_else(|| "GET".to_owned(), |m| m.to_ascii_uppercase()),
             url: file.url,
-            docs: None,
-            headers,
-            query: Vec::new(),
-            vars: Vec::new(),
-            body: file.body.map(|b| Body::Text(Content::Utf8(b.text))),
-            auth: None,
-            captures: Vec::new(),
-            asserts: Vec::new(),
-            script: None,
+            docs: file.docs,
+            headers: strings(file.headers, "headers", path)?,
+            query: query(file.query, path)?,
+            vars: strings(file.vars, "vars", path)?,
+            body: file.body.map(|b| b.into_body(path, sidecar)).transpose()?,
+            auth: file.auth,
+            captures: file.capture.unwrap_or_default(),
+            asserts: file.assert.unwrap_or_default(),
+            script: file.script.map(|s| Script {
+                pre: s.pre,
+                post: s.post,
+            }),
         })
     }
 

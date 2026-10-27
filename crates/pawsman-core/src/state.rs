@@ -196,7 +196,7 @@ impl AppState {
             request.method(),
             request.url(),
             request.headers(),
-            request.body(),
+            request.body_text(),
         );
         match outgoing {
             Ok(outgoing) => {
