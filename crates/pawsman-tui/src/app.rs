@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use pawsman_core::engine::Engine;
 use pawsman_core::keys::{self, Action, Context};
 use pawsman_core::notice::Notice;
+use pawsman_core::resolve::Preview;
 use pawsman_core::state::Snapshot;
 use pawsman_model::RequestId;
 use ratatui::backend::{Backend, CrosstermBackend};
@@ -17,7 +18,8 @@ use ratatui::{Frame, Terminal};
 use crate::input::MouseKind;
 use crate::input::{Input, Reader};
 use crate::term::{Caps, InTmux, Term, probe};
-use crate::views::main::{self, Focus, MainView};
+use crate::views::main::{self, Focus, MainView, TraceView};
+use crate::views::picker::{self, Item};
 use crate::views::splash::{self, Splash};
 use crate::views::{colors, help, home};
 use crate::{Options, TuiError};
@@ -95,7 +97,12 @@ const PAGE: u16 = 10;
 enum Overlay {
     None,
     Help,
+    /// The environment picker, its highlighted row.
+    Picker(usize),
 }
+
+/// The selected request's preview, for one snapshot generation.
+type PreviewCache = Option<(u64, RequestId, Option<Result<Preview, Notice>>)>;
 
 /// UI state: which screen, which overlay, which notice.
 pub(crate) struct App {
@@ -109,6 +116,8 @@ pub(crate) struct App {
     selected: Option<RequestId>,
     focus: Focus,
     scroll: u16,
+    trace: TraceView,
+    preview: PreviewCache,
     commands: Vec<UiCommand>,
 }
 
@@ -128,6 +137,8 @@ impl App {
             selected: None,
             focus: Focus::Sidebar,
             scroll: 0,
+            trace: TraceView::Hidden,
+            preview: None,
             commands: Vec::new(),
         }
     }
@@ -222,8 +233,71 @@ impl App {
             }
             Action::PageUp => self.scroll_by(-i32::from(PAGE)),
             Action::PageDown => self.scroll_by(i32::from(PAGE)),
+            Action::PickEnv => {
+                let active = self.snapshot.as_ref().and_then(|s| s.active_env());
+                let at = self
+                    .picker_items()
+                    .iter()
+                    .position(|i| i.env.as_deref() == active)
+                    .unwrap_or(0);
+                self.overlay = Overlay::Picker(at);
+            }
+            Action::Trace => self.trace = self.trace.toggled(),
             _ => {}
         }
+    }
+
+    /// `none`, then the collection's environments.
+    fn picker_items(&self) -> Vec<Item> {
+        let envs = self.snapshot.as_ref().map_or(&[][..], |s| s.environments());
+        std::iter::once(Item {
+            env: None,
+            valid: true,
+        })
+        .chain(envs.iter().map(|e| Item {
+            env: Some(e.name().to_owned()),
+            valid: e.error().is_none(),
+        }))
+        .collect()
+    }
+
+    fn picker_action(&mut self, action: Action, at: usize) {
+        let items = self.picker_items();
+        match action {
+            Action::Up | Action::Down => {
+                let valid: Vec<usize> = (0..items.len())
+                    .filter(|i| items.get(*i).is_some_and(|item| item.valid))
+                    .collect();
+                let next = if action == Action::Up {
+                    valid.iter().rev().find(|i| **i < at)
+                } else {
+                    valid.iter().find(|i| **i > at)
+                };
+                self.overlay = Overlay::Picker(next.copied().unwrap_or(at));
+            }
+            Action::Confirm => {
+                if let Some(item) = items.get(at).filter(|item| item.valid) {
+                    self.commands.push(UiCommand::SelectEnv(item.env.clone()));
+                    self.overlay = Overlay::None;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The selected request's preview, computed once per snapshot generation.
+    fn preview(&mut self) -> Option<&Result<Preview, Notice>> {
+        let snapshot = self.snapshot.as_ref()?;
+        let id = self.selected?;
+        let generation = snapshot.generation();
+        let fresh = self
+            .preview
+            .as_ref()
+            .is_some_and(|(g, i, _)| *g == generation && *i == id);
+        if !fresh {
+            self.preview = Some((generation, id, snapshot.preview(id)));
+        }
+        self.preview.as_ref().and_then(|(_, _, p)| p.as_ref())
     }
 
     fn scroll_by(&mut self, step: i32) {
@@ -234,7 +308,8 @@ impl App {
         match (&self.screen, self.overlay) {
             (Screen::Splash(_), _) => Context::Splash,
             (Screen::Home | Screen::Main, Overlay::Help) => Context::Help,
-            (Screen::Home, Overlay::None) => Context::Home,
+            (Screen::Main, Overlay::Picker(_)) => Context::Picker,
+            (Screen::Home, Overlay::None | Overlay::Picker(_)) => Context::Home,
             (Screen::Main, Overlay::None) => Context::Main,
         }
     }
@@ -270,6 +345,9 @@ impl App {
             Some(Action::Quit) => return Ok(Flow::Quit),
             Some(Action::Help) => self.overlay = Overlay::Help,
             Some(Action::Close) => self.overlay = Overlay::None,
+            Some(action) if let Overlay::Picker(at) = self.overlay => {
+                self.picker_action(action, at);
+            }
             Some(Action::Copy) => self.notices.push_back(Notice::info(format!(
                 "nothing selected · {} quits",
                 quit_label()
@@ -293,22 +371,30 @@ impl App {
         }
         self.expire(now);
         let notice = self.shown.as_ref().map(|(notice, _)| notice);
-        match (&self.screen, &self.snapshot) {
-            (Screen::Main, Some(snapshot)) => {
+        let notice = notice.cloned();
+        let on_main = matches!(self.screen, Screen::Main) && self.snapshot.is_some();
+        if on_main {
+            let preview = self.preview().cloned();
+            if let Some(snapshot) = &self.snapshot {
                 let view = MainView {
                     snapshot,
                     selected: self.selected,
                     focus: self.focus,
                     scroll: self.scroll,
                     now: Instant::now(),
-                    notice,
+                    notice: notice.as_ref(),
+                    preview: preview.as_ref(),
+                    trace: self.trace,
                 };
                 main::draw(frame, area, &view);
             }
-            _ => home::draw(frame, area, notice, &self.caps),
+        } else {
+            home::draw(frame, area, notice.as_ref(), &self.caps);
         }
-        if self.overlay == Overlay::Help {
-            help::draw(frame, area);
+        match self.overlay {
+            Overlay::Help => help::draw(frame, area),
+            Overlay::Picker(at) => picker::draw(frame, area, &self.picker_items(), at),
+            Overlay::None => {}
         }
         colors::downsample(frame.buffer_mut(), area, self.caps.color());
     }

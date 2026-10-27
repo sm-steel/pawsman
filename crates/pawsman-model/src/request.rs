@@ -251,15 +251,6 @@ impl Request {
     pub fn has_m2_parts(&self) -> bool {
         !self.captures.is_empty() || !self.asserts.is_empty() || self.script.is_some()
     }
-
-    /// Whether any field holds a `{{…}}` template.
-    #[must_use]
-    pub fn has_template(&self) -> bool {
-        let has = crate::template::has_vars;
-        has(&self.url)
-            || self.headers.iter().any(|(k, v)| has(k) || has(v))
-            || self.body_text().is_some_and(has)
-    }
 }
 
 #[cfg(test)]
@@ -515,14 +506,5 @@ post = "b"
         let r = parse("name = \"x\"\nkind = \"http\"\nurl = \"u\"\n", "x");
 
         assert!(r.is_ok(), "{r:?}");
-    }
-
-    #[test]
-    fn templates_are_noticed() {
-        let r = parse("name = \"x\"\nurl = \"{{base}}/u\"\n", "x").unwrap();
-        let plain = parse("name = \"x\"\nurl = \"http://h/u\"\n", "x").unwrap();
-
-        assert!(r.has_template(), "an unresolved variable");
-        assert!(!plain.has_template(), "none");
     }
 }

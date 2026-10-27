@@ -115,6 +115,13 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, view: &MainView<'_>) {
                 lines.push(Line::styled(help.into_owned(), Style::new().fg(DIM)));
             }
         }
+        RequestStatus::Unresolved(notice) => {
+            lines.push(Line::styled(
+                sanitize(notice.text()),
+                Style::new().fg(Color::LightRed),
+            ));
+            lines.push(Line::styled("not sent", Style::new().fg(DIM)));
+        }
         RequestStatus::Cancelled => {
             lines.push(Line::styled("cancelled", Style::new().fg(Color::Yellow)));
         }
