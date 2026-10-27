@@ -33,9 +33,8 @@ pub struct ResolvedRequest {
     base_dir: PathBuf,
 }
 
-/// A resolved body.
+/// A resolved body. Not `non_exhaustive`: a new kind must break the encoder's match.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum ResolvedBody {
     /// JSON text.
     Json(String),
