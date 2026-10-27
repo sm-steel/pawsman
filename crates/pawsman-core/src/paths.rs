@@ -56,7 +56,7 @@ impl Paths {
     /// `globals.toml` in the config directory.
     #[must_use]
     pub fn globals_file(&self) -> PathBuf {
-        self.config.clone()
+        self.config.join("globals.toml")
     }
 
     /// Where the rolling log goes.

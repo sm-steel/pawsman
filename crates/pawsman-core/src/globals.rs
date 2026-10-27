@@ -2,7 +2,15 @@
 
 use std::path::Path;
 
+use serde::Deserialize;
+
 use crate::CoreError;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GlobalsFile {
+    vars: Option<toml::Table>,
+}
 
 /// Reads the global variables; a missing file has none.
 ///
@@ -10,8 +18,24 @@ use crate::CoreError;
 ///
 /// `core::globals_invalid` when the file cannot be read or parsed.
 pub fn load(path: &Path) -> Result<Vec<(String, String)>, CoreError> {
-    let _ = path;
-    Err(CoreError::globals_invalid(path, "todo"))
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(CoreError::globals_invalid(path, err.to_string())),
+    };
+    let file: GlobalsFile = toml::from_str(&text)
+        .map_err(|e| CoreError::globals_invalid(path, e.message().replace('\n', " ")))?;
+    file.vars
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(key, value)| match value {
+            toml::Value::String(value) => Ok((key, value)),
+            _ => Err(CoreError::globals_invalid(
+                path,
+                format!("`vars.{key}` must be a string"),
+            )),
+        })
+        .collect()
 }
 
 #[cfg(test)]
