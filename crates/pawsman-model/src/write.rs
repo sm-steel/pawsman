@@ -298,7 +298,8 @@ post = "vars.x = 1"
             "[a-z]{1,8}",
             prop_oneof![
                 text().prop_map(PartData::Text),
-                "[a-z][a-z/._-]{0,15}".prop_map(|p| PartData::File(PathBuf::from(p))),
+                "[a-z][a-z._-]{0,7}(/[a-z][a-z._-]{0,7}){0,2}"
+                    .prop_map(|p| PartData::File(PathBuf::from(p))),
             ],
             prop::option::of("[a-z]+/[a-z]+"),
         )
@@ -315,7 +316,8 @@ post = "vars.x = 1"
             content().prop_map(Body::Text),
             pairs().prop_map(Body::Form),
             prop::collection::vec(part(), 1..3).prop_map(Body::Multipart),
-            "[a-z][a-z/._-]{0,15}".prop_map(|p| Body::File(PathBuf::from(p))),
+            "[a-z][a-z._-]{0,7}(/[a-z][a-z._-]{0,7}){0,2}"
+                .prop_map(|p| Body::File(PathBuf::from(p))),
         ])
     }
 

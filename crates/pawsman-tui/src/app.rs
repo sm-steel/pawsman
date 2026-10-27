@@ -285,10 +285,11 @@ impl App {
         }
     }
 
-    /// The selected request's preview, computed once per snapshot generation.
-    fn preview(&mut self) -> Option<&Result<Preview, Notice>> {
-        let snapshot = self.snapshot.as_ref()?;
-        let id = self.selected?;
+    /// Recomputes the selected request's preview once per snapshot generation.
+    fn refresh_preview(&mut self) {
+        let (Some(snapshot), Some(id)) = (self.snapshot.as_ref(), self.selected) else {
+            return;
+        };
         let generation = snapshot.generation();
         let fresh = self
             .preview
@@ -297,7 +298,6 @@ impl App {
         if !fresh {
             self.preview = Some((generation, id, snapshot.preview(id)));
         }
-        self.preview.as_ref().and_then(|(_, _, p)| p.as_ref())
     }
 
     fn scroll_by(&mut self, step: i32) {
@@ -374,7 +374,12 @@ impl App {
         let notice = notice.cloned();
         let on_main = matches!(self.screen, Screen::Main) && self.snapshot.is_some();
         if on_main {
-            let preview = self.preview().cloned();
+            self.refresh_preview();
+            let preview = self
+                .preview
+                .as_ref()
+                .filter(|(_, id, _)| Some(*id) == self.selected)
+                .and_then(|(_, _, p)| p.as_ref());
             if let Some(snapshot) = &self.snapshot {
                 let view = MainView {
                     snapshot,
@@ -383,7 +388,7 @@ impl App {
                     scroll: self.scroll,
                     now: Instant::now(),
                     notice: notice.as_ref(),
-                    preview: preview.as_ref(),
+                    preview,
                     trace: self.trace,
                 };
                 main::draw(frame, area, &view);

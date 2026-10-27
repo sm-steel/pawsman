@@ -131,7 +131,7 @@ impl BodyFile {
                 .collect::<Result<_, _>>()
                 .map(Body::Multipart);
         }
-        Ok(Body::File(PathBuf::from(self.file.unwrap_or_default())))
+        confined(&self.file.unwrap_or_default(), "body.file", path).map(Body::File)
     }
 }
 
@@ -139,7 +139,7 @@ impl PartFile {
     fn into_part(self, path: &Path) -> Result<Part, ModelError> {
         let data = match (self.value, self.file) {
             (Some(value), None) => PartData::Text(value),
-            (None, Some(file)) => PartData::File(PathBuf::from(file)),
+            (None, Some(file)) => PartData::File(confined(&file, "body.multipart.file", path)?),
             _ => {
                 return Err(ModelError::invalid_file(
                     path,
@@ -150,11 +150,43 @@ impl PartFile {
                 ));
             }
         };
+        if self
+            .content_type
+            .as_deref()
+            .is_some_and(|t| t.contains(['\r', '\n']))
+        {
+            return Err(ModelError::invalid_file(
+                path,
+                &format!(
+                    "multipart part `{}` has a line break in `content_type`",
+                    self.name
+                ),
+            ));
+        }
         Ok(Part {
             name: self.name,
             data,
             content_type: self.content_type,
         })
+    }
+}
+
+/// A body file path that stays inside the collection: relative, without `..`.
+fn confined(file: &str, key: &str, path: &Path) -> Result<PathBuf, ModelError> {
+    use std::path::Component;
+
+    let file = PathBuf::from(file);
+    let inside = !file.as_os_str().is_empty()
+        && file
+            .components()
+            .all(|c| matches!(c, Component::Normal(_) | Component::CurDir));
+    if inside {
+        Ok(file)
+    } else {
+        Err(ModelError::invalid_file(
+            path,
+            &format!("`{key}` must be a relative path inside the collection, without `..`"),
+        ))
     }
 }
 

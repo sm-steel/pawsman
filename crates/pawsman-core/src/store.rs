@@ -24,6 +24,7 @@ const SKIPPED: [&str; 2] = ["node_modules", "target"];
 /// that cannot be read are logged and skipped.
 pub fn load(dir: &Path) -> Result<Collection, ModelError> {
     let started = Instant::now();
+    let root = dir.canonicalize().unwrap_or_else(|_| dir.to_owned());
     let mut files = Vec::new();
     let mut stack = vec![(PathBuf::new(), 0)];
     let (mut too_deep, mut too_many) = (false, false);
@@ -50,7 +51,10 @@ pub fn load(dir: &Path) -> Result<Collection, ModelError> {
                 stack.push((child, depth + 1));
                 continue;
             }
-            let is_file = file_type.is_file() || (file_type.is_symlink() && entry.path().is_file());
+            let is_file = file_type.is_file()
+                || (file_type.is_symlink()
+                    && entry.path().is_file()
+                    && inside(&root, &entry.path()));
             if !is_file || !wanted(&child, &name) {
                 continue;
             }
@@ -84,6 +88,11 @@ pub fn load(dir: &Path) -> Result<Collection, ModelError> {
         "collection loaded"
     );
     Ok(collection)
+}
+
+/// Whether `path`, symlinks followed, lies under `root`; a link out of the collection is not read.
+fn inside(root: &Path, path: &Path) -> bool {
+    path.canonicalize().is_ok_and(|real| real.starts_with(root))
 }
 
 /// The files the model reads, by name and place.

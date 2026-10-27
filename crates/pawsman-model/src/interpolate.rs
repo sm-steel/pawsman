@@ -16,8 +16,12 @@ use crate::template::{self, Segment, VarName};
 use crate::trace::{Field, Trace, TraceEntry, TraceValue};
 use crate::{Folder, Manifest, ModelError, Request};
 
-/// A field may not grow past this many bytes.
+/// Variables may add at most this many bytes to one field.
 const MAX_FIELD: usize = 1 << 20;
+/// Variables may add at most this many bytes to one request.
+const MAX_TOTAL: usize = 16 << 20;
+/// A traced value is cut to this many characters.
+const TRACE_CHARS: usize = 200;
 /// Variables may not nest deeper than this.
 const MAX_DEPTH: usize = 64;
 
@@ -222,6 +226,8 @@ struct Resolver<'a> {
     trace: Vec<TraceEntry>,
     secrets: Vec<SecretString>,
     rng: fastrand::Rng,
+    /// Bytes variables have added so far, across all fields.
+    added: usize,
 }
 
 impl<'a> Resolver<'a> {
@@ -237,6 +243,7 @@ impl<'a> Resolver<'a> {
             trace: Vec::new(),
             secrets: Vec::new(),
             rng: fastrand::Rng::with_seed(seed),
+            added: 0,
         }
     }
 
@@ -286,6 +293,7 @@ impl<'a> Resolver<'a> {
             text: String::new(),
             secret: false,
         };
+        let mut added = 0;
         for segment in parsed.segments() {
             match segment {
                 Segment::Literal(literal) => out.text.push_str(literal),
@@ -302,19 +310,27 @@ impl<'a> Resolver<'a> {
                             value: if value.secret {
                                 TraceValue::Secret
                             } else {
-                                TraceValue::Plain(value.text.clone())
+                                TraceValue::Plain(shortened(&value.text))
                             },
                         },
                     );
+                    added += value.text.len();
+                    self.added += value.text.len();
+                    if added > MAX_FIELD {
+                        return Err(ModelError::runaway_template(
+                            &label,
+                            "expands to more than 1 MiB",
+                        ));
+                    }
+                    if self.added > MAX_TOTAL {
+                        return Err(ModelError::runaway_template(
+                            &label,
+                            "the request expands to more than 16 MiB in total",
+                        ));
+                    }
                     out.text.push_str(&value.text);
                     out.secret |= value.secret;
                 }
-            }
-            if out.text.len() > MAX_FIELD {
-                return Err(ModelError::runaway_template(
-                    &label,
-                    "expands to more than 1 MiB",
-                ));
             }
         }
         Ok(out)
@@ -431,6 +447,14 @@ impl<'a> Resolver<'a> {
             text,
             secret: false,
         })
+    }
+}
+
+/// At most `TRACE_CHARS` characters of `text`, then `…`.
+fn shortened(text: &str) -> String {
+    match text.char_indices().nth(TRACE_CHARS) {
+        Some((cut, _)) => format!("{}…", text.get(..cut).unwrap_or(text)),
+        None => text.to_owned(),
     }
 }
 
@@ -701,9 +725,11 @@ mod tests {
             })
             .collect();
         vars.push(("b19".into(), "x".into()));
-        let headers: String = (0..1000)
-            .map(|n| format!("X-{n} = \"{{{{b1}}}}\"\n"))
-            .collect();
+        let headers = (0..1000).fold(String::new(), |mut out, n| {
+            use std::fmt::Write as _;
+            let _ = writeln!(out, "X-{n} = \"{{{{b1}}}}\"");
+            out
+        });
         let r = req(&format!("name = \"x\"\nurl = \"u\"\n[headers]\n{headers}"));
         let s = scopes().layer(&Source::Collection, &vars);
         let started = Instant::now();

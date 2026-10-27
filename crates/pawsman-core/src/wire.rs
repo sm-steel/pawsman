@@ -28,10 +28,7 @@ pub struct Wire {
 /// `core::body_file` when a body file cannot be read.
 pub fn encode(resolved: &ResolvedRequest, root: &Path, seed: u64) -> Result<Wire, CoreError> {
     let dir = root.join(resolved.base_dir());
-    let read = |path: &Path| {
-        let path = dir.join(path);
-        std::fs::read(&path).map_err(|e| CoreError::body_file(&path, &e))
-    };
+    let read = |path: &Path| read_inside(root, &dir.join(path));
     let mut headers = resolved.headers().to_vec();
     let (body, content_type) = match resolved.body() {
         None => (Vec::new(), None),
@@ -56,7 +53,8 @@ pub fn encode(resolved: &ResolvedRequest, root: &Path, seed: u64) -> Result<Wire
             )
         }
         Some(ResolvedBody::Multipart(parts)) => {
-            let boundary = boundary(seed);
+            let user_boundary = content_type_of(&headers).and_then(boundary_of);
+            let boundary = user_boundary.clone().unwrap_or_else(|| boundary(seed));
             let mut out = Vec::new();
             for part in parts {
                 out.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
@@ -90,13 +88,13 @@ pub fn encode(resolved: &ResolvedRequest, root: &Path, seed: u64) -> Result<Wire
                 out.extend_from_slice(b"\r\n");
             }
             out.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
-            let own = format!("multipart/form-data; boundary={boundary}");
-            let user_has_boundary =
-                content_type_of(&headers).is_some_and(|v| v.contains("boundary="));
-            if !user_has_boundary {
+            if user_boundary.is_none() {
                 headers.retain(|(n, _)| !n.eq_ignore_ascii_case(CONTENT_TYPE));
             }
-            (out, Some(own))
+            (
+                out,
+                Some(format!("multipart/form-data; boundary={boundary}")),
+            )
         }
     };
     if let Some(content_type) = content_type
@@ -113,6 +111,34 @@ pub fn encode(resolved: &ResolvedRequest, root: &Path, seed: u64) -> Result<Wire
 
 const CONTENT_TYPE: &str = "Content-Type";
 const OCTET_STREAM: &str = "application/octet-stream";
+
+/// Reads `path`, which must resolve, symlinks followed, to a file under `root`.
+fn read_inside(root: &Path, path: &Path) -> Result<Vec<u8>, CoreError> {
+    let real = path
+        .canonicalize()
+        .map_err(|e| CoreError::body_file(path, &e))?;
+    let root = root
+        .canonicalize()
+        .map_err(|e| CoreError::body_file(path, &e))?;
+    if !real.starts_with(&root) {
+        return Err(CoreError::body_file(
+            path,
+            &std::io::Error::other("it is outside the collection"),
+        ));
+    }
+    std::fs::read(&real).map_err(|e| CoreError::body_file(path, &e))
+}
+
+/// The `boundary=` parameter of a `Content-Type`, quotes removed.
+fn boundary_of(content_type: &str) -> Option<String> {
+    content_type.split(';').find_map(|param| {
+        let (key, value) = param.split_once('=')?;
+        key.trim()
+            .eq_ignore_ascii_case("boundary")
+            .then(|| value.trim().trim_matches('"').to_owned())
+            .filter(|b| !b.is_empty())
+    })
+}
 
 fn content_type_of(headers: &[(String, String)]) -> Option<&str> {
     headers

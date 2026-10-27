@@ -47,7 +47,8 @@ One line per non-obvious decision.
 - **Sidecar bodies by reference** — `json = { sidecar = "x.body.json" }`, a plain file name next to the request; the writer moves JSON and text bodies above 40 lines, and any binary body, there.
 - **A broken `_folder.toml` invalidates its requests** — sending them without the folder's headers and variables would be silently wrong.
 - **`{{env.NAME}}` values count as secrets** — any process variable may hold a credential, so they are masked and redacted like declared secrets.
-- **Interpolation is bounded** — a field stops at 1 MiB and variables at 64 levels, so a self-multiplying chain fails with `model::bad_template` instead of exhausting memory.
+- **Interpolation is bounded** — variables may add 1 MiB to a field and 16 MiB to a request and nest 64 levels, so a self-multiplying chain fails with `model::bad_template` instead of exhausting memory; literal text is not counted, and traced values are cut to 200 characters.
+- **Body files stay inside the collection** — `file` paths are relative without `..`, and a file or sidecar that resolves outside through a symlink is not read, so pressing F5 in a cloned collection cannot upload `~/.ssh`.
 - **`core::body_file` for unreadable body files** — the model is pure, so files named in `[body]` are read when sending, and their errors are core's.
 - **secrecy 0.10.3 though its last release is 2024-10** — an obviously finished crate (a small wrapper over zeroize, 188 M downloads) with commits in its repository in 2026 (→ [rules §1](../rules/rust-project.md#1-working-agreement)).
 - **No environment at start** — the last pick is remembered with the UI state in piece 1.4.
