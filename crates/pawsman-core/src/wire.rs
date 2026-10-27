@@ -300,6 +300,46 @@ mod tests {
     }
 
     #[test]
+    fn a_users_multipart_boundary_frames_the_body() {
+        let r = resolve(
+            "name = \"x\"\nurl = \"http://h\"\n[headers]\nContent-Type = \"multipart/form-data; boundary=\\\"own-b\\\"\"\n[[body.multipart]]\nname = \"n\"\nvalue = \"v\"\n",
+        );
+
+        let w = encode(&r, Path::new("/c"), 7).unwrap();
+        let body = String::from_utf8_lossy(&w.body);
+
+        assert!(
+            body.starts_with("--own-b\r\n") && body.ends_with("--own-b--\r\n"),
+            "{body}"
+        );
+        assert_eq!(
+            header(&w, "content-type"),
+            Some("multipart/form-data; boundary=\"own-b\""),
+            "kept"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_body_file_symlinked_out_of_the_collection_is_refused() {
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret"), b"top secret").unwrap();
+        let root = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path().join("secret"), root.path().join("up.bin"))
+            .unwrap();
+
+        let err = encode(
+            &resolve("name = \"x\"\nurl = \"http://h\"\n[body]\nfile = \"up.bin\"\n"),
+            root.path(),
+            1,
+        )
+        .unwrap_err();
+
+        assert_eq!(err.code(), crate::codes::BODY_FILE, "code");
+        assert!(err.to_string().contains("outside the collection"), "{err}");
+    }
+
+    #[test]
     fn a_missing_file_is_body_file() {
         let err = encode(
             &resolve("name = \"x\"\nurl = \"http://h\"\n[body]\nfile = \"gone.bin\"\n"),

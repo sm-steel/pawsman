@@ -673,6 +673,76 @@ mod tests {
     }
 
     #[test]
+    fn a_large_literal_body_is_not_a_runaway() {
+        let mut r = req("name = \"x\"\nurl = \"u\"\n");
+        let big = "x".repeat(3 << 20);
+        r.body = Some(Body::Text(Content::Utf8(format!("{big}{{{{v}}}}"))));
+        let s = scopes().layer(&Source::Collection, &pairs(&[("v", "1")]));
+
+        let (resolved, _) = run(&r, &[], &manifest(""), &s).unwrap();
+
+        assert_eq!(
+            resolved
+                .body()
+                .map(|b| matches!(b, ResolvedBody::Text(t) if t.len() == big.len() + 1)),
+            Some(true),
+            "3 MiB of literal text plus one variable"
+        );
+    }
+
+    #[test]
+    fn the_whole_request_has_an_expansion_budget() {
+        let mut vars: Vec<(String, String)> = (0..19)
+            .map(|n| {
+                (
+                    format!("b{n}"),
+                    format!("{{{{b{}}}}}{{{{b{}}}}}", n + 1, n + 1),
+                )
+            })
+            .collect();
+        vars.push(("b19".into(), "x".into()));
+        let headers: String = (0..1000)
+            .map(|n| format!("X-{n} = \"{{{{b1}}}}\"\n"))
+            .collect();
+        let r = req(&format!("name = \"x\"\nurl = \"u\"\n[headers]\n{headers}"));
+        let s = scopes().layer(&Source::Collection, &vars);
+        let started = Instant::now();
+
+        let err = run(&r, &[], &manifest(""), &s).unwrap_err();
+
+        assert_eq!(err.code(), codes::BAD_TEMPLATE, "{err}");
+        assert!(err.to_string().contains("in total"), "{err}");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn trace_values_are_shortened() {
+        let s = scopes().layer(&Source::Collection, &pairs(&[("v", &"y".repeat(10_000))]));
+
+        let (_, trace) = run(
+            &req("name = \"x\"\nurl = \"{{v}}\"\n"),
+            &[],
+            &manifest(""),
+            &s,
+        )
+        .unwrap();
+
+        let Some(TraceValue::Plain(value)) = trace.entries().first().map(|e| e.value().clone())
+        else {
+            panic!("{trace:?}");
+        };
+        assert!(
+            value.chars().count() <= 201 && value.ends_with('…'),
+            "{} chars",
+            value.len()
+        );
+    }
+
+    #[test]
     fn expansion_is_capped() {
         let mut vars: Vec<(String, String)> = (0..30)
             .map(|n| {

@@ -440,6 +440,13 @@ post = "b"
     #[case::script_unknown("[script]\nmid = \"x\"\n")]
     #[case::query_number("[query]\npage = 1\n")]
     #[case::var_number("[vars]\nport = 1\n")]
+    #[case::absolute_file("[body]\nfile = \"/home/u/.ssh/id_ed25519\"\n")]
+    #[case::parent_file("[body]\nfile = \"../../secret\"\n")]
+    #[case::absolute_part("[[body.multipart]]\nname = \"p\"\nfile = \"/etc/passwd\"\n")]
+    #[case::parent_part("[[body.multipart]]\nname = \"p\"\nfile = \"a/../../b\"\n")]
+    #[case::part_type_crlf(
+        "[[body.multipart]]\nname = \"p\"\nvalue = \"v\"\ncontent_type = \"a/b\\r\\nX: y\"\n"
+    )]
     fn bad_sections_are_invalid_files(#[case] tail: &str) {
         let err = parse_with(
             &format!("name = \"x\"\nurl = \"u\"\n{tail}"),

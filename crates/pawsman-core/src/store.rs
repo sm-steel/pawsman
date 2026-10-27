@@ -215,6 +215,30 @@ mod tests {
         assert_eq!(paths(&c), ["a.req.toml"], "only the real request");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_file_pointing_outside_is_not_read() {
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("key"), "PRIVATE").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        put(dir.path(), "pawsman.toml", MANIFEST);
+        put(
+            dir.path(),
+            "a.req.toml",
+            "name = \"a\"\nurl = \"u\"\n[body]\ntext = { sidecar = \"a.body.txt\" }\n",
+        );
+        std::os::unix::fs::symlink(outside.path().join("key"), dir.path().join("a.body.txt"))
+            .unwrap();
+
+        let c = load(dir.path()).unwrap();
+
+        assert!(
+            matches!(c.entries()[0].kind(), EntryKind::Invalid(e) if e.code() == pawsman_model::codes::MISSING_SIDECAR),
+            "{:?}",
+            c.entries()[0].kind()
+        );
+    }
+
     #[test]
     fn depth_is_capped() {
         let dir = tempfile::tempdir().unwrap();
