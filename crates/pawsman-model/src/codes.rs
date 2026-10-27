@@ -12,6 +12,8 @@ pub const BAD_TEMPLATE: ErrorCode = ErrorCode::new("model::bad_template");
 pub const FORMAT_TOO_NEW: ErrorCode = ErrorCode::new("model::format_too_new");
 /// A request names a sidecar body file that does not exist.
 pub const MISSING_SIDECAR: ErrorCode = ErrorCode::new("model::missing_sidecar");
+/// An environment declares a secret that has no value.
+pub const MISSING_SECRET: ErrorCode = ErrorCode::new("model::missing_secret");
 
 /// Every code, for the registry test.
 pub const ALL: &[ErrorCode] = &[

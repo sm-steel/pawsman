@@ -538,13 +538,15 @@ mod tests {
         fn state(files: &[(&str, &str)]) -> AppState {
             let files = files
                 .iter()
-                .map(|(n, t)| (PathBuf::from(format!("/demo/{n}")), (*t).to_owned()))
+                .map(|(n, t)| {
+                    pawsman_model::SourceFile::new(PathBuf::from(n), t.as_bytes().to_vec())
+                })
+                .chain(std::iter::once(pawsman_model::SourceFile::new(
+                    "pawsman.toml".into(),
+                    b"format = 1\nname = \"Demo\"\n".to_vec(),
+                )))
                 .collect();
-            AppState::new(Collection::from_files(
-                Path::new("/demo"),
-                Some("format = 1\nname = \"Demo\"\n"),
-                files,
-            ))
+            AppState::new(Collection::from_files(Path::new("/demo"), files))
         }
 
         fn done(state: &mut AppState, n: u32, status: u16, body: &[u8]) {

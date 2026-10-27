@@ -5,6 +5,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Instant;
 
+#[cfg(test)]
+use pawsman_model::SourceFile;
 use pawsman_model::{Collection, EntryKind, ModelError, RequestId};
 use pawsman_net::{NetError, NetEvent, Outgoing, Response};
 
@@ -253,11 +255,16 @@ mod tests {
     fn collection(files: &[(&str, &str)]) -> Collection {
         Collection::from_files(
             Path::new("/c"),
-            Some("format = 1\nname = \"C\"\n"),
-            files
-                .iter()
-                .map(|(n, t)| (PathBuf::from(format!("/c/{n}")), (*t).to_owned()))
-                .collect(),
+            std::iter::once(SourceFile::new(
+                "pawsman.toml".into(),
+                b"format = 1\nname = \"C\"\n".to_vec(),
+            ))
+            .chain(
+                files
+                    .iter()
+                    .map(|(n, t)| SourceFile::new(PathBuf::from(n), t.as_bytes().to_vec())),
+            )
+            .collect(),
         )
         .unwrap()
     }

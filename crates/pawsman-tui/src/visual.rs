@@ -109,11 +109,14 @@ fn demo_state() -> pawsman_core::state::AppState {
         ("5-broken.req.toml", "name = "),
     ]
     .iter()
-    .map(|(n, t)| (PathBuf::from(format!("/demo/{n}")), (*t).to_owned()))
+    .map(|(n, t)| pawsman_model::SourceFile::new(PathBuf::from(n), t.as_bytes().to_vec()))
+        .chain(std::iter::once(pawsman_model::SourceFile::new(
+            "pawsman.toml".into(),
+            b"format = 1\nname = \"Demo\"\n".to_vec(),
+        )))
     .collect();
     pawsman_core::state::AppState::new(pawsman_model::Collection::from_files(
         Path::new("/demo"),
-        Some("format = 1\nname = \"Demo\"\n"),
         files,
     ))
 }
