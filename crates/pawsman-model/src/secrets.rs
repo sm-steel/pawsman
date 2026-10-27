@@ -9,20 +9,33 @@ pub fn resolve(
     process: &dyn Fn(&str) -> Option<String>,
     dotenv: &[(String, SecretString)],
 ) -> Option<SecretString> {
-    let _ = (name, process, dotenv);
-    None
+    process(&env_var(name)).map(SecretString::from).or_else(|| {
+        dotenv
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.clone())
+    })
 }
 
 /// The process variable that holds secret `name`.
 #[must_use]
 pub fn env_var(name: &str) -> String {
-    let _ = name;
-    String::new()
+    let upper: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("PAWSMAN_SECRET_{upper}")
 }
 
 #[cfg(test)]
 mod tests {
-    use secrecy::ExposeSecret as _;
+    use secrecy::ExposeSecret;
 
     use super::*;
 
@@ -37,7 +50,7 @@ mod tests {
         let value = resolve("token", &process, &dotenv());
 
         assert_eq!(
-            value.as_ref().map(|v| v.expose_secret()),
+            value.as_ref().map(ExposeSecret::expose_secret),
             Some("from-process")
         );
     }
@@ -47,7 +60,7 @@ mod tests {
         let value = resolve("token", &|_| None, &dotenv());
 
         assert_eq!(
-            value.as_ref().map(|v| v.expose_secret()),
+            value.as_ref().map(ExposeSecret::expose_secret),
             Some("from-dotenv")
         );
     }

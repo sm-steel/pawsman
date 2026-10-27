@@ -23,7 +23,7 @@ pub struct Folder {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Node {
     /// A subfolder.
-    Folder(Folder),
+    Folder(Box<Folder>),
     /// A request file; look it up with [`crate::Collection::entry`].
     Entry(RequestId),
 }

@@ -22,6 +22,10 @@ impl SourceFile {
         &self.path
     }
 
+    pub(crate) fn into_parts(self) -> (PathBuf, Vec<u8>) {
+        (self.path, self.bytes)
+    }
+
     /// The contents.
     #[must_use]
     pub fn bytes(&self) -> &[u8] {
