@@ -1,0 +1,46 @@
+{
+  "name": "Ada Lovelace",
+  "email": "ada@example.com",
+  "roles": [
+    "admin",
+    "analyst"
+  ],
+  "address": {
+    "street": "12 St James's Square",
+    "city": "London",
+    "country": "GB"
+  },
+  "preferences": {
+    "theme": "dark",
+    "language": "en",
+    "notifications": {
+      "email": true,
+      "sms": false
+    }
+  },
+  "projects": [
+    {
+      "id": 1,
+      "title": "Analytical Engine notes",
+      "tags": [
+        "math",
+        "history"
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Bernoulli numbers",
+      "tags": [
+        "math"
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Notes on the Menabrea memoir",
+      "tags": [
+        "translation",
+        "notes"
+      ]
+    }
+  ]
+}

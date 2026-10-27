@@ -1,0 +1,5 @@
+name = "Users"
+order = ["list", "create"]
+
+[headers]
+Accept = "application/json"

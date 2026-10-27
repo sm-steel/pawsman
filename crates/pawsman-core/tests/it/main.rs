@@ -5,4 +5,5 @@
     reason = "test helpers: rust rule 1 applies outside tests only"
 )]
 
+mod demo;
 mod engine;
