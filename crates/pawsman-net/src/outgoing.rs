@@ -31,44 +31,33 @@ impl Outgoing {
         body: Bytes,
         redactor: Redactor,
     ) -> Result<Self, NetError> {
-        let method = Method::from_bytes(method.as_bytes())
-            .map_err(|_| NetError::invalid_request("method", method))?;
-        let bad_url = || NetError::invalid_request("url", url);
-        let uri: Uri = url.parse().map_err(|_| bad_url())?;
-        let scheme_ok = matches!(uri.scheme_str(), Some("http" | "https"));
-        // Credentials in the URL would land in the Host header and in access logs; auth comes
-        // with M3.
-        let userinfo = uri.authority().is_some_and(|a| a.as_str().contains('@'));
-        if !scheme_ok || userinfo || uri.host().is_none_or(str::is_empty) {
-            return Err(bad_url());
+        match parts(method, url, headers) {
+            Ok((method, uri, headers)) => Ok(Self {
+                method,
+                uri,
+                headers,
+                body,
+                redactor,
+            }),
+            Err(err) => Err(err.redacted(&redactor)),
         }
-        let mut map = HeaderMap::new();
-        for (name, value) in headers {
-            let name = HeaderName::from_bytes(name.as_bytes())
-                .map_err(|_| NetError::invalid_request("header name", name))?;
-            let value = HeaderValue::from_str(value)
-                .map_err(|_| NetError::invalid_request("header value", value))?;
-            map.append(name, value);
-        }
-        Ok(Self {
-            method,
-            uri,
-            headers: map,
-            body,
-            redactor,
-        })
     }
 
     /// The host for logs, secrets hidden.
     #[must_use]
     pub fn log_host(&self) -> Cow<'_, str> {
-        Cow::Borrowed(self.host())
+        self.redactor.redact(self.host())
     }
 
     /// The path for logs, without the query, secrets hidden.
     #[must_use]
     pub fn log_path(&self) -> Cow<'_, str> {
-        Cow::Borrowed(self.path())
+        self.redactor.redact(self.path())
+    }
+
+    /// Hides this request's secrets.
+    pub(crate) fn redactor(&self) -> &Redactor {
+        &self.redactor
     }
 
     /// The host without IPv6 brackets, for resolving and TLS.
@@ -103,6 +92,34 @@ impl Outgoing {
     pub(crate) fn body(&self) -> &Bytes {
         &self.body
     }
+}
+
+/// Validates the method, URL and headers.
+fn parts(
+    method: &str,
+    url: &str,
+    headers: &[(String, String)],
+) -> Result<(Method, Uri, HeaderMap), NetError> {
+    let method = Method::from_bytes(method.as_bytes())
+        .map_err(|_| NetError::invalid_request("method", method))?;
+    let bad_url = || NetError::invalid_request("url", url);
+    let uri: Uri = url.parse().map_err(|_| bad_url())?;
+    let scheme_ok = matches!(uri.scheme_str(), Some("http" | "https"));
+    // Credentials in the URL would land in the Host header and in access logs; auth comes
+    // with M3.
+    let userinfo = uri.authority().is_some_and(|a| a.as_str().contains('@'));
+    if !scheme_ok || userinfo || uri.host().is_none_or(str::is_empty) {
+        return Err(bad_url());
+    }
+    let mut map = HeaderMap::new();
+    for (name, value) in headers {
+        let name = HeaderName::from_bytes(name.as_bytes())
+            .map_err(|_| NetError::invalid_request("header name", name))?;
+        let value = HeaderValue::from_str(value)
+            .map_err(|_| NetError::invalid_request("header value", value))?;
+        map.append(name, value);
+    }
+    Ok((method, uri, map))
 }
 
 #[cfg(test)]

@@ -244,7 +244,9 @@ async fn one(
         result = work => Some(result.unwrap_or_else(|_| Err(NetError::timeout(crate::Phase::Total)))),
     };
     let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    let (method, host, path) = (outgoing.method().as_str(), outgoing.host(), outgoing.path());
+    let method = outgoing.method().as_str();
+    let (host, path) = (outgoing.log_host(), outgoing.log_path());
+    let (host, path) = (host.as_ref(), path.as_ref());
     match result {
         None => {
             info!(method, host, path, ms, "request cancelled");
@@ -262,6 +264,7 @@ async fn one(
             NetEvent::Done { id, response }
         }
         Some(Err(error)) => {
+            let error = error.redacted(outgoing.redactor());
             info!(method, host, path, code = %error.code(), ms, "request failed");
             NetEvent::Failed { id, error }
         }
