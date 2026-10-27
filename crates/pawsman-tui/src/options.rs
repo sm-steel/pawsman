@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use pawsman_core::engine::Setup;
 use pawsman_core::env::EnvSnapshot;
 use pawsman_core::notice::Notice;
 use pawsman_core::settings::{ImageMode, Settings};
@@ -16,6 +17,7 @@ pub struct Options {
     images: ImageMode,
     notices: Vec<Notice>,
     dir: Option<PathBuf>,
+    globals: Option<PathBuf>,
     settings: Settings,
 }
 
@@ -29,6 +31,7 @@ impl Options {
             images,
             notices: Vec::new(),
             dir: None,
+            globals: None,
             settings: Settings::default(),
         }
     }
@@ -47,12 +50,19 @@ impl Options {
         self
     }
 
-    pub(crate) fn take_dir(&mut self) -> Option<PathBuf> {
-        self.dir.take()
+    /// `globals.toml`.
+    #[must_use]
+    pub fn globals(mut self, globals: Option<PathBuf>) -> Self {
+        self.globals = globals;
+        self
     }
 
-    pub(crate) fn settings_ref(&self) -> &Settings {
-        &self.settings
+    /// What the engine starts with; takes the collection directory.
+    pub(crate) fn engine_setup(&mut self) -> Setup {
+        Setup::new(self.settings.clone())
+            .dir(self.dir.take())
+            .env(self.env.clone())
+            .globals(self.globals.clone())
     }
 
     /// Notices to show once the main view is up.

@@ -109,13 +109,16 @@ fn demo_state() -> pawsman_core::state::AppState {
         ("5-broken.req.toml", "name = "),
     ]
     .iter()
-    .map(|(n, t)| (PathBuf::from(format!("/demo/{n}")), (*t).to_owned()))
+    .map(|(n, t)| pawsman_model::SourceFile::new(PathBuf::from(n), t.as_bytes().to_vec()))
+        .chain(std::iter::once(pawsman_model::SourceFile::new(
+            "pawsman.toml".into(),
+            b"format = 1\nname = \"Demo\"\n".to_vec(),
+        )))
     .collect();
-    pawsman_core::state::AppState::new(pawsman_model::Collection::from_files(
-        Path::new("/demo"),
-        Some("format = 1\nname = \"Demo\"\n"),
-        files,
-    ))
+    pawsman_core::state::AppState::new(
+        pawsman_model::Collection::from_files(Path::new("/demo"), files),
+        pawsman_core::resolve::Context::default(),
+    )
 }
 
 fn main_app(state: &mut pawsman_core::state::AppState, downs: usize) -> App {
@@ -144,13 +147,34 @@ fn visual_main_view() {
     let mut r = png::Renderer::new();
     let mut st = demo_state();
     let id = RequestId::new(1);
-    st.apply(Event::Send(id), Instant::now());
+    st.apply(
+        Event::Send {
+            id,
+            at: std::time::UNIX_EPOCH,
+            seed: 1,
+        },
+        Instant::now(),
+    );
     let body = br#"[{"id":1,"name":"Ada Lovelace"},{"id":2,"name":"Grace Hopper"}]"#;
     let response = Response::for_tests(200, body, Duration::from_millis(42));
     st.apply(Event::Net(NetEvent::Done { id, response }), Instant::now());
-    st.apply(Event::Send(RequestId::new(3)), Instant::now());
+    st.apply(
+        Event::Send {
+            id: RequestId::new(3),
+            at: std::time::UNIX_EPOCH,
+            seed: 1,
+        },
+        Instant::now(),
+    );
     let failed = RequestId::new(4);
-    st.apply(Event::Send(failed), Instant::now());
+    st.apply(
+        Event::Send {
+            id: failed,
+            at: std::time::UNIX_EPOCH,
+            seed: 1,
+        },
+        Instant::now(),
+    );
     let error = NetError::connect(
         "127.0.0.1:8787",
         &std::io::Error::other("connection refused"),
@@ -183,4 +207,76 @@ fn visual_main_view() {
         )
         .unwrap();
     r.render(&app_frame(&mut narrow, 60, 20), &out("main-60x20-response"));
+}
+
+fn press(app: &mut App, keys: &[Chord]) {
+    for key in keys {
+        app.update(Msg::Input(Input::Key(*key)), Duration::ZERO)
+            .unwrap();
+    }
+}
+
+#[test]
+#[ignore = "writes PNG files for the visual check"]
+fn visual_environments() {
+    use std::path::Path;
+    use std::time::Instant;
+
+    use pawsman_core::env::EnvSnapshot;
+    use pawsman_core::resolve::Context;
+    use pawsman_core::state::{AppState, Event};
+    use pawsman_model::RequestId;
+
+    let mut r = png::Renderer::new();
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/demo");
+    let env = EnvSnapshot::from_pairs([("PAWSMAN_SECRET_TOKEN", "s3cr3t")]);
+    let mut st = AppState::new(pawsman_core::store::load(&dir), Context::new(vec![], env));
+    let e = Chord::plain(KeyCode::Char('e'));
+    let t = Chord::plain(KeyCode::Char('t'));
+    let down = Chord::plain(KeyCode::Down);
+
+    let mut tree = main_app(&mut st, 0);
+    r.render(
+        &app_frame(&mut tree, 160, 48),
+        &out("envs-160x48-tree-none"),
+    );
+    press(&mut tree, &[e]);
+    r.render(&app_frame(&mut tree, 160, 48), &out("envs-160x48-picker"));
+
+    st.apply(Event::SelectEnv(Some("dev".into())), Instant::now());
+    let mut traced = main_app(&mut st, 0);
+    press(&mut traced, &[t]);
+    r.render(
+        &app_frame(&mut traced, 160, 48),
+        &out("envs-160x48-trace-secret"),
+    );
+    r.render(
+        &app_frame(&mut traced, 80, 24),
+        &out("envs-80x24-trace-secret"),
+    );
+
+    st.apply(
+        Event::Send {
+            id: RequestId::new(7),
+            at: std::time::UNIX_EPOCH,
+            seed: 1,
+        },
+        Instant::now(),
+    );
+    let mut unresolved = main_app(&mut st, 6);
+    r.render(
+        &app_frame(&mut unresolved, 160, 48),
+        &out("envs-160x48-unresolved"),
+    );
+
+    let mut sidecar = main_app(&mut st, 8);
+    press(&mut sidecar, &[t]);
+    r.render(
+        &app_frame(&mut sidecar, 100, 30),
+        &out("envs-100x30-sidecar-body"),
+    );
+
+    let mut narrow = main_app(&mut st, 0);
+    press(&mut narrow, &[down]);
+    r.render(&app_frame(&mut narrow, 60, 20), &out("envs-60x20-sidebar"));
 }

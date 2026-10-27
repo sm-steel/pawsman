@@ -19,11 +19,31 @@ pub struct CoreError {
 enum Kind {
     NoHome,
     SettingsInvalid { path: PathBuf, reason: String },
+    GlobalsInvalid { path: PathBuf, reason: String },
+    BodyFile { path: PathBuf, reason: String },
 }
 
 impl CoreError {
     pub(crate) fn no_home() -> Self {
         Self { kind: Kind::NoHome }
+    }
+
+    pub(crate) fn globals_invalid(path: &Path, reason: impl Into<String>) -> Self {
+        Self {
+            kind: Kind::GlobalsInvalid {
+                path: path.to_owned(),
+                reason: reason.into(),
+            },
+        }
+    }
+
+    pub(crate) fn body_file(path: &Path, err: &std::io::Error) -> Self {
+        Self {
+            kind: Kind::BodyFile {
+                path: path.to_owned(),
+                reason: err.to_string(),
+            },
+        }
     }
 
     pub(crate) fn settings_invalid(path: &Path, reason: impl Into<String>) -> Self {
@@ -40,7 +60,14 @@ impl fmt::Display for CoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.kind {
             Kind::NoHome => f.write_str("neither `HOME` nor the `XDG_*` directories are set"),
-            Kind::SettingsInvalid { path, reason } => {
+            Kind::BodyFile { path, reason } => {
+                write!(
+                    f,
+                    "`{}` cannot be read for the body: {reason}",
+                    path.display()
+                )
+            }
+            Kind::SettingsInvalid { path, reason } | Kind::GlobalsInvalid { path, reason } => {
                 write!(f, "`{}` is not valid: {reason}", path.display())
             }
         }
@@ -54,6 +81,8 @@ impl ErrorInfo for CoreError {
         match self.kind {
             Kind::NoHome => codes::NO_HOME,
             Kind::SettingsInvalid { .. } => codes::SETTINGS_INVALID,
+            Kind::GlobalsInvalid { .. } => codes::GLOBALS_INVALID,
+            Kind::BodyFile { .. } => codes::BODY_FILE,
         }
     }
 
@@ -61,6 +90,12 @@ impl ErrorInfo for CoreError {
         Some(Cow::Borrowed(match self.kind {
             Kind::NoHome => "Set `HOME` to your home directory.",
             Kind::SettingsInvalid { .. } => "Fix the file, or remove it to use the defaults.",
+            Kind::GlobalsInvalid { .. } => {
+                "Fix the file, or remove it; collections still open without it."
+            }
+            Kind::BodyFile { .. } => {
+                "Check the path in the request's `[body]`; it is relative to the request file."
+            }
         }))
     }
 }

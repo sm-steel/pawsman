@@ -34,6 +34,12 @@ pub enum Action {
     PageUp,
     /// Scroll a page down.
     PageDown,
+    /// Open the environment picker.
+    PickEnv,
+    /// Show or hide the variable trace.
+    Trace,
+    /// Choose the highlighted item.
+    Confirm,
 }
 
 /// Where a binding applies.
@@ -48,6 +54,8 @@ pub enum Context {
     Main,
     /// The help overlay.
     Help,
+    /// The environment picker.
+    Picker,
 }
 
 /// Where a binding is shown.
@@ -93,7 +101,13 @@ impl Binding {
     }
 }
 
-const ALL: &[Context] = &[Context::Splash, Context::Home, Context::Main, Context::Help];
+const ALL: &[Context] = &[
+    Context::Splash,
+    Context::Home,
+    Context::Main,
+    Context::Help,
+    Context::Picker,
+];
 
 static TABLE: &[Binding] = &[
     Binding {
@@ -115,6 +129,27 @@ static TABLE: &[Binding] = &[
         shown: Shown::Bar,
     },
     Binding {
+        action: Action::PickEnv,
+        chords: &[Chord::plain(KeyCode::Char('e'))],
+        contexts: &[Context::Main],
+        hint: "env",
+        shown: Shown::Bar,
+    },
+    Binding {
+        action: Action::Trace,
+        chords: &[Chord::plain(KeyCode::Char('t'))],
+        contexts: &[Context::Main],
+        hint: "trace",
+        shown: Shown::Bar,
+    },
+    Binding {
+        action: Action::Confirm,
+        chords: &[Chord::plain(KeyCode::Enter)],
+        contexts: &[Context::Picker],
+        hint: "choose",
+        shown: Shown::Bar,
+    },
+    Binding {
         action: Action::Cancel,
         chords: &[Chord::plain(KeyCode::Esc)],
         contexts: &[Context::Main],
@@ -131,7 +166,7 @@ static TABLE: &[Binding] = &[
     Binding {
         action: Action::Up,
         chords: &[Chord::plain(KeyCode::Up), Chord::plain(KeyCode::Char('k'))],
-        contexts: &[Context::Main],
+        contexts: &[Context::Main, Context::Picker],
         hint: "up",
         shown: Shown::HelpOnly,
     },
@@ -141,7 +176,7 @@ static TABLE: &[Binding] = &[
             Chord::plain(KeyCode::Down),
             Chord::plain(KeyCode::Char('j')),
         ],
-        contexts: &[Context::Main],
+        contexts: &[Context::Main, Context::Picker],
         hint: "down",
         shown: Shown::HelpOnly,
     },
@@ -176,7 +211,7 @@ static TABLE: &[Binding] = &[
     Binding {
         action: Action::Close,
         chords: &[Chord::plain(KeyCode::Esc), Chord::plain(KeyCode::F(1))],
-        contexts: &[Context::Help],
+        contexts: &[Context::Help, Context::Picker],
         hint: "close",
         shown: Shown::Bar,
     },
@@ -322,6 +357,10 @@ mod tests {
     #[case::page_up(Chord::plain(KeyCode::PageUp), Action::PageUp)]
     #[case::quit(Chord::ctrl('q'), Action::Quit)]
     #[case::help(Chord::plain(KeyCode::F(1)), Action::Help)]
+    #[case::e_picks_env(Chord::plain(KeyCode::Char('e')), Action::PickEnv)]
+    #[case::cyrillic_e(Chord::plain(KeyCode::Char('у')), Action::PickEnv)]
+    #[case::t_trace(Chord::plain(KeyCode::Char('t')), Action::Trace)]
+    #[case::cyrillic_t(Chord::plain(KeyCode::Char('е')), Action::Trace)]
     fn main_view_bindings(#[case] chord: Chord, #[case] expected: Action) {
         assert_eq!(lookup(Context::Main, chord), Some(expected), "{chord}");
     }
@@ -331,7 +370,23 @@ mod tests {
         let hints = hints(Context::Main);
 
         let keys: Vec<&str> = hints.iter().map(|(k, _)| k.as_str()).collect();
-        assert_eq!(keys, ["F5", "Tab", "Esc", "Ctrl-Q", "F1"], "{hints:?}");
+        assert_eq!(
+            keys,
+            ["F5", "Tab", "e", "t", "Esc", "Ctrl-Q", "F1"],
+            "{hints:?}"
+        );
+    }
+
+    #[rstest]
+    #[case::up(Chord::plain(KeyCode::Up), Some(Action::Up))]
+    #[case::k(Chord::plain(KeyCode::Char('k')), Some(Action::Up))]
+    #[case::down(Chord::plain(KeyCode::Down), Some(Action::Down))]
+    #[case::j(Chord::plain(KeyCode::Char('j')), Some(Action::Down))]
+    #[case::enter(Chord::plain(KeyCode::Enter), Some(Action::Confirm))]
+    #[case::esc(Chord::plain(KeyCode::Esc), Some(Action::Close))]
+    #[case::no_send(Chord::plain(KeyCode::F(5)), None)]
+    fn picker_bindings(#[case] chord: Chord, #[case] expected: Option<Action>) {
+        assert_eq!(lookup(Context::Picker, chord), expected, "{chord}");
     }
 
     #[test]
@@ -345,7 +400,13 @@ mod tests {
 
     #[test]
     fn every_context_can_quit() {
-        for context in [Context::Splash, Context::Home, Context::Main, Context::Help] {
+        for context in [
+            Context::Splash,
+            Context::Home,
+            Context::Main,
+            Context::Help,
+            Context::Picker,
+        ] {
             assert_eq!(
                 lookup(context, Chord::ctrl('q')),
                 Some(Action::Quit),

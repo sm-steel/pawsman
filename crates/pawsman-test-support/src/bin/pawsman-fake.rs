@@ -44,6 +44,15 @@ fn main() {
     fake.route("POST", "/echo", Reply::new(201).body("created"));
     fake.route(
         "GET",
+        "/me",
+        json(r#"{"user":"demo"}"#).require_header(
+            "authorization",
+            "Bearer demo-token",
+            Reply::new(401).body("missing or wrong token"),
+        ),
+    );
+    fake.route(
+        "GET",
         "/bytes",
         Reply::new(200).body((0..=255u8).collect::<Vec<_>>()),
     );

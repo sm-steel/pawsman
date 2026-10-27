@@ -53,7 +53,8 @@ fn main() -> ExitCode {
     let options = Options::new(env, splash, images)
         .notices(notices)
         .dir(args.dir)
-        .settings(settings);
+        .settings(settings)
+        .globals(paths.as_ref().map(Paths::globals_file));
     match pawsman_tui::run(options) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {

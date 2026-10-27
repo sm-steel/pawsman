@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use pawsman_core::keys::Context;
 use pawsman_core::notice::Notice;
+use pawsman_core::resolve::Preview;
 use pawsman_core::state::Snapshot;
 use pawsman_model::RequestId;
 use ratatui::Frame;
@@ -46,6 +47,25 @@ impl Focus {
     }
 }
 
+/// Whether the request pane shows the variable trace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TraceView {
+    /// Only the request.
+    Hidden,
+    /// The request, then the trace.
+    Shown,
+}
+
+impl TraceView {
+    /// The other one.
+    pub(crate) fn toggled(self) -> Self {
+        match self {
+            Self::Hidden => Self::Shown,
+            Self::Shown => Self::Hidden,
+        }
+    }
+}
+
 /// Everything the main view needs.
 pub(crate) struct MainView<'a> {
     pub(crate) snapshot: &'a Snapshot,
@@ -54,6 +74,10 @@ pub(crate) struct MainView<'a> {
     pub(crate) scroll: u16,
     pub(crate) now: Instant,
     pub(crate) notice: Option<&'a Notice>,
+    /// The selected request resolved, or why it does not resolve.
+    pub(crate) preview: Option<&'a Result<Preview, Notice>>,
+    /// Show the variable trace under the request.
+    pub(crate) trace: TraceView,
 }
 
 /// Sidebar width in the wide layouts.
@@ -79,7 +103,7 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, view: &MainView<'_>) {
         frame.render_widget(super::home::notice_line(n), notice);
     }
     frame.render_widget(
-        Paragraph::new(hints::line(Context::Main)).style(Style::new().fg(DIM)),
+        Paragraph::new(hints::fit(Context::Main, bar.width)).style(Style::new().fg(DIM)),
         bar,
     );
     if body.width >= 160 {
@@ -121,7 +145,7 @@ fn panes(
     }
     if let Some(area) = req {
         let inner = framed(frame, area, " Request ", Focus::Request, view.focus);
-        request::draw(frame, inner, view.snapshot, view.selected);
+        request::draw(frame, inner, view);
     }
     if let Some(area) = res {
         let inner = framed(frame, area, " Response ", Focus::Response, view.focus);

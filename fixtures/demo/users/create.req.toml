@@ -1,0 +1,6 @@
+name = "Create user"
+method = "POST"
+url = "{{base}}/echo"
+
+[body]
+json = { sidecar = "create.body.json" }

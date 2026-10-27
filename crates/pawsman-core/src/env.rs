@@ -1,11 +1,12 @@
 //! The process environment, read once at start (OBSERVABILITY P1).
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 /// The process environment as it was at start. Nothing else reads `std::env`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EnvSnapshot {
-    vars: BTreeMap<String, String>,
+    vars: Arc<BTreeMap<String, String>>,
 }
 
 impl EnvSnapshot {
@@ -19,7 +20,9 @@ impl EnvSnapshot {
         let vars = std::env::vars_os()
             .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
             .collect();
-        Self { vars }
+        Self {
+            vars: Arc::new(vars),
+        }
     }
 
     /// Builds a snapshot from pairs, for tests and child processes.
@@ -31,10 +34,12 @@ impl EnvSnapshot {
         V: Into<String>,
     {
         Self {
-            vars: pairs
-                .into_iter()
-                .map(|(k, v)| (k.into(), v.into()))
-                .collect(),
+            vars: Arc::new(
+                pairs
+                    .into_iter()
+                    .map(|(k, v)| (k.into(), v.into()))
+                    .collect(),
+            ),
         }
     }
 
@@ -45,6 +50,12 @@ impl EnvSnapshot {
             .get(name)
             .map(String::as_str)
             .filter(|v| !v.is_empty())
+    }
+
+    /// A lookup of this snapshot for `{{env.NAME}}`; an empty value counts as unset.
+    pub fn lookup(&self) -> pawsman_model::scope::ProcessLookup {
+        let vars = Arc::clone(&self.vars);
+        Box::new(move |name| vars.get(name).filter(|v| !v.is_empty()).cloned())
     }
 
     /// `TERM`.
@@ -104,6 +115,16 @@ mod tests {
 
     fn env(pairs: &[(&str, &str)]) -> EnvSnapshot {
         EnvSnapshot::from_pairs(pairs.iter().copied())
+    }
+
+    #[test]
+    fn lookup_reads_the_snapshot() {
+        let lookup = env(&[("A", "1"), ("E", "")]).lookup();
+
+        assert_eq!(
+            (lookup("A"), lookup("E"), lookup("B")),
+            (Some("1".into()), None, None)
+        );
     }
 
     #[test]

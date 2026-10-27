@@ -37,6 +37,38 @@ enum Kind {
 }
 
 impl NetError {
+    /// The same error with every secret of `redactor` hidden in its text.
+    #[must_use]
+    pub fn redacted(self, redactor: &pawsman_model::Redactor) -> Self {
+        if redactor.is_empty() {
+            return self;
+        }
+        let hide = |s: String| redactor.redact(&s).into_owned();
+        let kind = match self.kind {
+            Kind::InvalidRequest { what, value } => Kind::InvalidRequest {
+                what,
+                value: hide(value),
+            },
+            Kind::Dns { host, reason } => Kind::Dns {
+                host: hide(host),
+                reason: hide(reason),
+            },
+            Kind::Connect { host, reason } => Kind::Connect {
+                host: hide(host),
+                reason: hide(reason),
+            },
+            Kind::Tls { host, reason } => Kind::Tls {
+                host: hide(host),
+                reason: hide(reason),
+            },
+            Kind::Protocol(reason) => Kind::Protocol(hide(reason)),
+            Kind::Spill(reason) => Kind::Spill(hide(reason)),
+            Kind::Start(reason) => Kind::Start(hide(reason)),
+            timeout @ Kind::Timeout(_) => timeout,
+        };
+        Self { kind }
+    }
+
     /// `value` is not a valid `what` (method, url, header name, header value).
     #[must_use]
     pub fn invalid_request(what: &'static str, value: &str) -> Self {

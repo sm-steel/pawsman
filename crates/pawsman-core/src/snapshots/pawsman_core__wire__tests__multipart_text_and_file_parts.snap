@@ -1,0 +1,16 @@
+---
+source: crates/pawsman-core/src/wire.rs
+expression: "format!(\"{}\\n\\n{body}\", header(&w, \"content-type\").unwrap())"
+---
+multipart/form-data; boundary=pawsman-vNsdHKxFIbmB90eexaga5zRT
+
+--pawsman-vNsdHKxFIbmB90eexaga5zRT\r\n
+Content-Disposition: form-data; name="note"\r\n
+\r\n
+hi\r\n
+--pawsman-vNsdHKxFIbmB90eexaga5zRT\r\n
+Content-Disposition: form-data; name="avatar"; filename="a.png"\r\n
+Content-Type: image/png\r\n
+\r\n
+PNG\r\n
+--pawsman-vNsdHKxFIbmB90eexaga5zRT--\r\n

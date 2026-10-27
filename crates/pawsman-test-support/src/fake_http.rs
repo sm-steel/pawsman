@@ -24,6 +24,7 @@ pub struct Reply {
     delay: Duration,
     trickle: Option<(Vec<u8>, Duration)>,
     repeat: usize,
+    require: Option<(String, String, Box<Self>)>,
 }
 
 impl Reply {
@@ -37,6 +38,7 @@ impl Reply {
             delay: Duration::ZERO,
             trickle: None,
             repeat: 1,
+            require: None,
         }
     }
 
@@ -65,6 +67,17 @@ impl Reply {
     #[must_use]
     pub fn trickle(mut self, chunk: Vec<u8>, every: Duration) -> Self {
         self.trickle = Some((chunk, every));
+        self
+    }
+
+    /// Answers only requests whose header `name` is `value`; others get `otherwise`.
+    #[must_use]
+    pub fn require_header(mut self, name: &str, value: &str, otherwise: Self) -> Self {
+        self.require = Some((
+            name.to_ascii_lowercase(),
+            value.to_owned(),
+            Box::new(otherwise),
+        ));
         self
     }
 
@@ -206,7 +219,7 @@ async fn answer(
 
     let method = req.method().as_str().to_owned();
     let path = req.uri().path().to_owned();
-    let headers = req
+    let headers: Vec<(String, String)> = req
         .headers()
         .iter()
         .map(|(k, v)| (k.as_str().to_owned(), v.to_str().unwrap_or("").to_owned()))
@@ -222,7 +235,7 @@ async fn answer(
         state.received.push(Received {
             method: method.clone(),
             path: path.clone(),
-            headers,
+            headers: headers.clone(),
             body,
         });
         state
@@ -232,12 +245,17 @@ async fn answer(
             .find(|(m, p, _)| *m == method && *p == path)
             .map(|(_, _, r)| r.clone())
     };
-    let Some(reply) = reply else {
+    let Some(mut reply) = reply else {
         return respond(
             &Reply::new(404).body("no route"),
             full(b"no route".to_vec()),
         );
     };
+    if let Some((name, value, otherwise)) = reply.require.clone()
+        && !headers.iter().any(|(n, v)| *n == name && *v == value)
+    {
+        reply = *otherwise;
+    }
     tokio::time::sleep(reply.delay).await;
     let body = if let Some((chunk, every)) = reply.trickle.clone() {
         let (mut tx, channel) = http_body_util::channel::Channel::<Bytes, Infallible>::new(4);
@@ -339,6 +357,30 @@ mod tests {
         let response = get(&fake, "/nope");
 
         assert!(response.starts_with("HTTP/1.1 404"), "{response:?}");
+    }
+
+    #[test]
+    fn require_header_picks_the_reply_by_header() {
+        let fake = FakeHttp::start();
+        fake.route(
+            "GET",
+            "/me",
+            Reply::new(200).require_header("X-Test", "yes", Reply::new(401)),
+        );
+        fake.route(
+            "GET",
+            "/other",
+            Reply::new(200).require_header("X-Test", "no", Reply::new(401)),
+        );
+
+        assert!(
+            get(&fake, "/me").starts_with("HTTP/1.1 200"),
+            "matching header"
+        );
+        assert!(
+            get(&fake, "/other").starts_with("HTTP/1.1 401"),
+            "other value"
+        );
     }
 
     #[test]

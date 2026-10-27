@@ -1,0 +1,2 @@
+name = "List users"
+url = "{{base}}/users"

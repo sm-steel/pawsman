@@ -55,4 +55,13 @@ A collection is a directory: `pawsman.toml` (format version, defaults), `envs/*.
 
 ## 4. Variable scopes
 
-Highest wins: runtime, request, folder chain (nearest first), environment, collection, global, then process env through `{{env.NAME}}` only. Secrets resolve from process env, `.env`, the OS keyring, then the age vault.
+Highest wins: runtime, request, folder chain (nearest first), environment, collection, global, then process env through `{{env.NAME}}` only. Secrets resolve from process env, `.env`, the OS keyring, then the age vault (keyring and vault from M3).
+
+```mermaid
+flowchart LR
+  tpl["{{name}}"] --> rt[runtime] --> rq["request [vars]"] --> fd["folders, nearest first"] --> env["environment vars and secrets"] --> col["pawsman.toml [vars]"] --> gl[globals.toml]
+  envdot["{{env.NAME}}"] --> proc[process env]
+  sec[declared secret] --> psec["PAWSMAN_SECRET_NAME"] --> dot[".env"]
+```
+
+`pawsman_model::interpolate` is pure: core builds the `Scopes` (`pawsman_core::resolve`), the model returns the resolved request, a trace of each value's scope, and a `Redactor` that hides every secret and `env.*` value it used in logs, errors and on screen.

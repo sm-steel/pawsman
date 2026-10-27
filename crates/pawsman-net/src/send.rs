@@ -14,20 +14,32 @@ use crate::body::Collector;
 use crate::runtime::NetConfig;
 use crate::{NetError, Outgoing, Phase, Response};
 
+/// The TLS client setup, or why there is none (no trusted certificates on this machine).
+pub(crate) type Tls = Result<Arc<rustls::ClientConfig>, String>;
+
 /// Sends `outgoing` and reads the whole response.
 pub(crate) async fn perform(
     outgoing: &Outgoing,
     config: NetConfig,
-    tls: Arc<rustls::ClientConfig>,
+    tls: Tls,
 ) -> Result<Response, NetError> {
     let started = Instant::now();
     let uri = outgoing.uri();
     let host = outgoing.host().to_owned();
     let https = uri.scheme_str() == Some("https");
     let port = uri.port_u16().unwrap_or(if https { 443 } else { 80 });
+    let tls = match tls {
+        Err(reason) if https => {
+            return Err(NetError::tls(
+                &host,
+                &format!("no trusted certificates: {reason}"),
+            ));
+        }
+        tls => tls.ok().filter(|_| https),
+    };
     let connecting = async {
         let tcp = connect(&host, port).await?;
-        if https {
+        if let Some(tls) = tls {
             let name = ServerName::try_from(host.clone())
                 .map_err(|_| NetError::tls(&host, "not a valid server name"))?;
             let stream = tokio_rustls::TlsConnector::from(tls)

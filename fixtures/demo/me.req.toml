@@ -1,0 +1,5 @@
+name = "Who am I (needs the token)"
+url = "{{base}}/me"
+
+[headers]
+Authorization = "Bearer {{token}}"

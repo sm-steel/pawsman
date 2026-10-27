@@ -1,0 +1,35 @@
+---
+source: crates/pawsman-model/src/write.rs
+expression: "request(&r, \"create-user\").toml"
+---
+name = "Create user"
+method = "POST"
+url = "{{base}}/users"
+docs = """
+Creates a user.
+Second line."""
+
+[headers]
+Accept = "application/json"
+
+[query]
+page = "1"
+ids = ["1", "2"]
+
+[vars]
+id = "42"
+
+[body]
+json = '{"name": "ada"}'
+
+[auth]
+type = "bearer"
+
+[[capture]]
+var = "etag"
+
+[[assert]]
+expr = "status == 200"
+
+[script]
+post = "vars.x = 1"

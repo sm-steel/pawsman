@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use pawsman_core::engine::Engine;
 use pawsman_core::keys::{self, Action, Context};
 use pawsman_core::notice::Notice;
+use pawsman_core::resolve::Preview;
 use pawsman_core::state::Snapshot;
 use pawsman_model::RequestId;
 use ratatui::backend::{Backend, CrosstermBackend};
@@ -17,7 +18,8 @@ use ratatui::{Frame, Terminal};
 use crate::input::MouseKind;
 use crate::input::{Input, Reader};
 use crate::term::{Caps, InTmux, Term, probe};
-use crate::views::main::{self, Focus, MainView};
+use crate::views::main::{self, Focus, MainView, TraceView};
+use crate::views::picker::{self, Item};
 use crate::views::splash::{self, Splash};
 use crate::views::{colors, help, home};
 use crate::{Options, TuiError};
@@ -51,12 +53,14 @@ impl PartialEq for Msg {
 }
 
 /// What the UI asks the engine to do.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum UiCommand {
     /// Send this request.
     Send(RequestId),
     /// Cancel it.
     Cancel(RequestId),
+    /// Resolve in this environment; `None` for none.
+    SelectEnv(Option<String>),
 }
 
 /// Whether the startup splash plays.
@@ -93,7 +97,12 @@ const PAGE: u16 = 10;
 enum Overlay {
     None,
     Help,
+    /// The environment picker, its highlighted row.
+    Picker(usize),
 }
+
+/// The selected request's preview, for one snapshot generation.
+type PreviewCache = Option<(u64, RequestId, Option<Result<Preview, Notice>>)>;
 
 /// UI state: which screen, which overlay, which notice.
 pub(crate) struct App {
@@ -107,6 +116,8 @@ pub(crate) struct App {
     selected: Option<RequestId>,
     focus: Focus,
     scroll: u16,
+    trace: TraceView,
+    preview: PreviewCache,
     commands: Vec<UiCommand>,
 }
 
@@ -126,6 +137,8 @@ impl App {
             selected: None,
             focus: Focus::Sidebar,
             scroll: 0,
+            trace: TraceView::Hidden,
+            preview: None,
             commands: Vec::new(),
         }
     }
@@ -220,7 +233,70 @@ impl App {
             }
             Action::PageUp => self.scroll_by(-i32::from(PAGE)),
             Action::PageDown => self.scroll_by(i32::from(PAGE)),
+            Action::PickEnv => {
+                let active = self.snapshot.as_ref().and_then(|s| s.active_env());
+                let at = self
+                    .picker_items()
+                    .iter()
+                    .position(|i| i.env.as_deref() == active)
+                    .unwrap_or(0);
+                self.overlay = Overlay::Picker(at);
+            }
+            Action::Trace => self.trace = self.trace.toggled(),
             _ => {}
+        }
+    }
+
+    /// `none`, then the collection's environments.
+    fn picker_items(&self) -> Vec<Item> {
+        let envs = self.snapshot.as_ref().map_or(&[][..], |s| s.environments());
+        std::iter::once(Item {
+            env: None,
+            valid: true,
+        })
+        .chain(envs.iter().map(|e| Item {
+            env: Some(e.name().to_owned()),
+            valid: e.error().is_none(),
+        }))
+        .collect()
+    }
+
+    fn picker_action(&mut self, action: Action, at: usize) {
+        let items = self.picker_items();
+        match action {
+            Action::Up | Action::Down => {
+                let valid: Vec<usize> = (0..items.len())
+                    .filter(|i| items.get(*i).is_some_and(|item| item.valid))
+                    .collect();
+                let next = if action == Action::Up {
+                    valid.iter().rev().find(|i| **i < at)
+                } else {
+                    valid.iter().find(|i| **i > at)
+                };
+                self.overlay = Overlay::Picker(next.copied().unwrap_or(at));
+            }
+            Action::Confirm => {
+                if let Some(item) = items.get(at).filter(|item| item.valid) {
+                    self.commands.push(UiCommand::SelectEnv(item.env.clone()));
+                    self.overlay = Overlay::None;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Recomputes the selected request's preview once per snapshot generation.
+    fn refresh_preview(&mut self) {
+        let (Some(snapshot), Some(id)) = (self.snapshot.as_ref(), self.selected) else {
+            return;
+        };
+        let generation = snapshot.generation();
+        let fresh = self
+            .preview
+            .as_ref()
+            .is_some_and(|(g, i, _)| *g == generation && *i == id);
+        if !fresh {
+            self.preview = Some((generation, id, snapshot.preview(id)));
         }
     }
 
@@ -232,7 +308,8 @@ impl App {
         match (&self.screen, self.overlay) {
             (Screen::Splash(_), _) => Context::Splash,
             (Screen::Home | Screen::Main, Overlay::Help) => Context::Help,
-            (Screen::Home, Overlay::None) => Context::Home,
+            (Screen::Main, Overlay::Picker(_)) => Context::Picker,
+            (Screen::Home, Overlay::None | Overlay::Picker(_)) => Context::Home,
             (Screen::Main, Overlay::None) => Context::Main,
         }
     }
@@ -268,6 +345,9 @@ impl App {
             Some(Action::Quit) => return Ok(Flow::Quit),
             Some(Action::Help) => self.overlay = Overlay::Help,
             Some(Action::Close) => self.overlay = Overlay::None,
+            Some(action) if let Overlay::Picker(at) = self.overlay => {
+                self.picker_action(action, at);
+            }
             Some(Action::Copy) => self.notices.push_back(Notice::info(format!(
                 "nothing selected · {} quits",
                 quit_label()
@@ -291,22 +371,35 @@ impl App {
         }
         self.expire(now);
         let notice = self.shown.as_ref().map(|(notice, _)| notice);
-        match (&self.screen, &self.snapshot) {
-            (Screen::Main, Some(snapshot)) => {
+        let notice = notice.cloned();
+        let on_main = matches!(self.screen, Screen::Main) && self.snapshot.is_some();
+        if on_main {
+            self.refresh_preview();
+            let preview = self
+                .preview
+                .as_ref()
+                .filter(|(_, id, _)| Some(*id) == self.selected)
+                .and_then(|(_, _, p)| p.as_ref());
+            if let Some(snapshot) = &self.snapshot {
                 let view = MainView {
                     snapshot,
                     selected: self.selected,
                     focus: self.focus,
                     scroll: self.scroll,
                     now: Instant::now(),
-                    notice,
+                    notice: notice.as_ref(),
+                    preview,
+                    trace: self.trace,
                 };
                 main::draw(frame, area, &view);
             }
-            _ => home::draw(frame, area, notice, &self.caps),
+        } else {
+            home::draw(frame, area, notice.as_ref(), &self.caps);
         }
-        if self.overlay == Overlay::Help {
-            help::draw(frame, area);
+        match self.overlay {
+            Overlay::Help => help::draw(frame, area),
+            Overlay::Picker(at) => picker::draw(frame, area, &self.picker_items(), at),
+            Overlay::None => {}
         }
         colors::downsample(frame.buffer_mut(), area, self.caps.color());
     }
@@ -386,14 +479,13 @@ pub fn run(mut options: Options) -> Result<(), TuiError> {
     let snapshots = tx.clone();
     let reader = Reader::spawn(term.reader()?, tx).map_err(TuiError::terminal_io)?;
     let mut notices = Vec::new();
-    let engine = Engine::start(
-        options.take_dir(),
-        options.settings_ref(),
-        move |snapshot| {
-            let _ = snapshots.send(Msg::Snapshot(snapshot));
-        },
-    )
-    .inspect_err(|err| notices.push(Notice::from_error(err)))
+    let engine = Engine::start(options.engine_setup(), move |snapshot| {
+        let _ = snapshots.send(Msg::Snapshot(snapshot));
+    })
+    .inspect_err(|err| {
+        tracing::warn!(%err, "engine did not start");
+        notices.push(Notice::from_error(err));
+    })
     .ok();
     let backend = CrosstermBackend::new(BufWriter::with_capacity(1 << 16, term.writer()?));
     let splash = options.splash();
@@ -451,6 +543,7 @@ fn event_loop<B: Backend<Error = std::io::Error>>(
             match (engine, command) {
                 (Some(engine), UiCommand::Send(id)) => engine.send(id),
                 (Some(engine), UiCommand::Cancel(id)) => engine.cancel(id),
+                (Some(engine), UiCommand::SelectEnv(env)) => engine.select_env(env),
                 (None, _) => {}
             }
         }
@@ -538,18 +631,30 @@ mod tests {
         fn state(files: &[(&str, &str)]) -> AppState {
             let files = files
                 .iter()
-                .map(|(n, t)| (PathBuf::from(format!("/demo/{n}")), (*t).to_owned()))
+                .map(|(n, t)| {
+                    pawsman_model::SourceFile::new(PathBuf::from(n), t.as_bytes().to_vec())
+                })
+                .chain(std::iter::once(pawsman_model::SourceFile::new(
+                    "pawsman.toml".into(),
+                    b"format = 1\nname = \"Demo\"\n".to_vec(),
+                )))
                 .collect();
-            AppState::new(Collection::from_files(
-                Path::new("/demo"),
-                Some("format = 1\nname = \"Demo\"\n"),
-                files,
-            ))
+            AppState::new(
+                Collection::from_files(Path::new("/demo"), files),
+                pawsman_core::resolve::Context::default(),
+            )
         }
 
         fn done(state: &mut AppState, n: u32, status: u16, body: &[u8]) {
             let id = RequestId::new(n);
-            state.apply(Event::Send(id), Instant::now());
+            state.apply(
+                Event::Send {
+                    id,
+                    at: std::time::UNIX_EPOCH,
+                    seed: 1,
+                },
+                Instant::now(),
+            );
             let response = Response::for_tests(status, body, Duration::from_millis(123));
             state.apply(Event::Net(NetEvent::Done { id, response }), Instant::now());
         }
@@ -628,7 +733,14 @@ mod tests {
                 .unwrap();
             assert!(app.take_commands().is_empty(), "idle: nothing to cancel");
 
-            st.apply(Event::Send(RequestId::new(1)), Instant::now());
+            st.apply(
+                Event::Send {
+                    id: RequestId::new(1),
+                    at: std::time::UNIX_EPOCH,
+                    seed: 1,
+                },
+                Instant::now(),
+            );
             app.update(Msg::Snapshot(st.snapshot()), Duration::ZERO)
                 .unwrap();
             app.update(key(Chord::plain(KeyCode::Esc)), Duration::ZERO)
@@ -644,7 +756,14 @@ mod tests {
         #[test]
         fn a_request_in_flight_ticks_every_100ms() {
             let mut st = state(FILES);
-            st.apply(Event::Send(RequestId::new(1)), Instant::now());
+            st.apply(
+                Event::Send {
+                    id: RequestId::new(1),
+                    at: std::time::UNIX_EPOCH,
+                    seed: 1,
+                },
+                Instant::now(),
+            );
             let mut app = app_with(&mut st);
 
             let text = screen(&render(&mut app, 160, 40, Duration::ZERO));
@@ -686,9 +805,10 @@ mod tests {
 
         #[test]
         fn a_load_error_shows_on_home() {
-            let mut st = AppState::new(Err(pawsman_model::ModelError::not_a_collection(
-                Path::new("/x"),
-            )));
+            let mut st = AppState::new(
+                Err(pawsman_model::ModelError::not_a_collection(Path::new("/x"))),
+                pawsman_core::resolve::Context::default(),
+            );
             let mut app = app_with(&mut st);
 
             let text = screen(&render(&mut app, 100, 24, Duration::ZERO));
@@ -712,7 +832,14 @@ mod tests {
         fn snapshot_100x30_stacked_failed() {
             let mut st = state(FILES);
             let id = RequestId::new(1);
-            st.apply(Event::Send(id), Instant::now());
+            st.apply(
+                Event::Send {
+                    id,
+                    at: std::time::UNIX_EPOCH,
+                    seed: 1,
+                },
+                Instant::now(),
+            );
             let error = pawsman_net::NetError::connect(
                 "127.0.0.1:8787",
                 &std::io::Error::other("connection refused"),
@@ -783,6 +910,173 @@ mod tests {
                 let mut app = app_with(&mut st);
                 render(&mut app, w, h, Duration::ZERO);
             }
+        }
+
+        const TREE: &[(&str, &str)] = &[
+            ("a/one.req.toml", "name = \"One\"\nurl = \"http://h/1\"\n"),
+            ("a/_folder.toml", "name = \"Alpha\"\n"),
+            ("b/two.req.toml", "name = \"Two\"\nurl = \"{{base}}/2\"\n"),
+            ("b/_folder.toml", "title = \"broken\"\n"),
+            ("top.req.toml", "name = \"Top\"\nurl = \"http://h/top\"\n"),
+        ];
+
+        const ENVS: &[(&str, &str)] = &[
+            (
+                "me.req.toml",
+                "name = \"Me\"\nurl = \"{{base}}/me\"\n[headers]\nAuthorization = \"Bearer {{token}}\"\n",
+            ),
+            (
+                "envs/dev.env.toml",
+                "secrets = [\"token\"]\n[vars]\nbase = \"http://dev\"\n",
+            ),
+            ("envs/prod.env.toml", "[vars]\nbase = \"http://prod\"\n"),
+            ("envs/broken.env.toml", "vars = 1\n"),
+        ];
+
+        fn state_with(files: &[(&str, &str)], env: &[(&str, &str)]) -> AppState {
+            let files = files
+                .iter()
+                .map(|(n, t)| {
+                    pawsman_model::SourceFile::new(PathBuf::from(n), t.as_bytes().to_vec())
+                })
+                .chain(std::iter::once(pawsman_model::SourceFile::new(
+                    "pawsman.toml".into(),
+                    b"format = 1\nname = \"Demo\"\n".to_vec(),
+                )))
+                .collect();
+            AppState::new(
+                Collection::from_files(Path::new("/demo"), files),
+                pawsman_core::resolve::Context::new(
+                    vec![],
+                    EnvSnapshot::from_pairs(env.iter().copied()),
+                ),
+            )
+        }
+
+        fn char_key(c: char) -> Msg {
+            key(Chord::plain(KeyCode::Char(c)))
+        }
+
+        fn press(app: &mut App, msgs: impl IntoIterator<Item = Msg>) {
+            for msg in msgs {
+                app.update(msg, Duration::ZERO).unwrap();
+            }
+        }
+
+        fn dev(st: &mut AppState) -> App {
+            st.apply(Event::SelectEnv(Some("dev".into())), Instant::now());
+            app_with(st)
+        }
+
+        #[test]
+        fn down_skips_folder_rows() {
+            let mut app = app_with(&mut state(TREE));
+
+            press(
+                &mut app,
+                [
+                    key(Chord::plain(KeyCode::Down)),
+                    key(Chord::plain(KeyCode::F(5))),
+                ],
+            );
+
+            assert_eq!(
+                app.take_commands(),
+                vec![UiCommand::Send(RequestId::new(2))],
+                "from a/one straight to b/two, past the `b` folder row"
+            );
+        }
+
+        #[test]
+        fn enter_in_the_picker_queues_select_env() {
+            let mut app = app_with(&mut state_with(ENVS, &[]));
+
+            press(
+                &mut app,
+                [
+                    char_key('e'),
+                    key(Chord::plain(KeyCode::Down)),
+                    key(Chord::plain(KeyCode::Enter)),
+                ],
+            );
+
+            assert_eq!(
+                app.take_commands(),
+                vec![UiCommand::SelectEnv(Some("dev".into()))],
+                "none → dev: the highlight skips the broken one, which sorts first"
+            );
+        }
+
+        #[test]
+        fn esc_closes_the_picker_without_a_command() {
+            let mut app = app_with(&mut state_with(ENVS, &[]));
+
+            press(&mut app, [char_key('e'), key(Chord::plain(KeyCode::Esc))]);
+
+            assert!(app.take_commands().is_empty(), "nothing chosen");
+            let text = screen(&render(&mut app, 160, 40, Duration::ZERO));
+            assert!(!text.contains("(invalid)"), "picker closed:\n{text}");
+        }
+
+        #[test]
+        fn a_secret_is_never_drawn() {
+            let mut st = state_with(ENVS, &[("PAWSMAN_SECRET_TOKEN", "s3cr3t")]);
+            let mut app = dev(&mut st);
+            press(&mut app, [char_key('t')]);
+
+            let text = screen(&render(&mut app, 160, 40, Duration::ZERO));
+
+            assert!(!text.contains("s3cr3t"), "masked:\n{text}");
+            assert!(text.contains("Bearer ••••••"), "mask shown:\n{text}");
+            assert!(text.contains("http://dev/me"), "resolved url:\n{text}");
+        }
+
+        #[test]
+        fn snapshot_160x40_tree() {
+            let mut app = app_with(&mut state(TREE));
+
+            insta::assert_snapshot!(render(&mut app, 160, 40, Duration::ZERO).backend());
+        }
+
+        #[test]
+        fn snapshot_160x40_picker_with_a_broken_env() {
+            let mut app = app_with(&mut state_with(ENVS, &[]));
+            press(&mut app, [char_key('e')]);
+
+            insta::assert_snapshot!(render(&mut app, 160, 40, Duration::ZERO).backend());
+        }
+
+        #[test]
+        fn snapshot_160x40_trace_with_a_secret() {
+            let mut st = state_with(ENVS, &[("PAWSMAN_SECRET_TOKEN", "s3cr3t")]);
+            let mut app = dev(&mut st);
+            press(&mut app, [char_key('t')]);
+
+            insta::assert_snapshot!(render(&mut app, 160, 40, Duration::ZERO).backend());
+        }
+
+        #[test]
+        fn snapshot_160x40_unresolved() {
+            let mut st = state_with(ENVS, &[]);
+            st.apply(
+                Event::Send {
+                    id: RequestId::new(1),
+                    at: std::time::UNIX_EPOCH,
+                    seed: 1,
+                },
+                Instant::now(),
+            );
+            let mut app = app_with(&mut st);
+
+            insta::assert_snapshot!(render(&mut app, 160, 40, Duration::ZERO).backend());
+        }
+
+        #[test]
+        fn snapshot_60x20_sidebar_with_env_row() {
+            let mut st = state_with(ENVS, &[]);
+            let mut app = dev(&mut st);
+
+            insta::assert_snapshot!(render(&mut app, 60, 20, Duration::ZERO).backend());
         }
     }
 

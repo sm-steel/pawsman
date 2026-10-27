@@ -42,3 +42,15 @@ One line per non-obvious decision.
 - **One connection per request, HTTP/1.1 only, until the timeline** — the simplest correct path; pooling, HTTP/2 and phase timings come together in piece 1.5.
 - **Snapshots and commands cross the UI boundary as values** — the engine publishes `Arc<Snapshot>`s through a callback, the UI queues `UiCommand`s the loop hands back, so both sides test without threads.
 - **The raw body view draws the first 256 KB** — redrawing megabytes every frame stalls the UI; the viewer in piece 1.6 scrolls through all of it.
+- **`[vars]` at every level** — requests, `_folder.toml`, environments, `pawsman.toml` and `globals.toml` each hold a `[vars]` table of strings; the request scope of the spec needs a home in the file.
+- **JSON bodies are strings until the viewer** — `json = """…"""` is sent as written; parsing comes with serde_json in piece 1.6.
+- **Sidecar bodies by reference** — `json = { sidecar = "x.body.json" }`, a plain file name next to the request; the writer moves JSON and text bodies above 40 lines, and any binary body, there.
+- **A broken `_folder.toml` invalidates its requests** — sending them without the folder's headers and variables would be silently wrong.
+- **`{{env.NAME}}` values count as secrets** — any process variable may hold a credential, so they are masked and redacted like declared secrets.
+- **Interpolation is bounded** — variables may add 1 MiB to a field and 16 MiB to a request and nest 64 levels, so a self-multiplying chain fails with `model::bad_template` instead of exhausting memory; literal text is not counted, and traced values are cut to 200 characters.
+- **Body files stay inside the collection** — `file` paths are relative without `..`, and a file or sidecar that resolves outside through a symlink is not read, so pressing F5 in a cloned collection cannot upload `~/.ssh`.
+- **`core::body_file` for unreadable body files** — the model is pure, so files named in `[body]` are read when sending, and their errors are core's.
+- **secrecy 0.10.3 though its last release is 2024-10** — an obviously finished crate (a small wrapper over zeroize, 188 M downloads) with commits in its repository in 2026 (→ [rules §1](../rules/rust-project.md#1-working-agreement)).
+- **No environment at start** — the last pick is remembered with the UI state in piece 1.4.
+- **The store skips hidden directories, `node_modules` and `target`, follows no symlinked directory, and stops at 16 levels and 10 000 files** — opening a repository root as a collection must stay fast.
+- **The hint bar drops hints to fit, never quit or help** — `trace`, `env` and `pane` go first on narrow terminals; F1 still lists everything.
