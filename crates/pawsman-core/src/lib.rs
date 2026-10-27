@@ -12,5 +12,6 @@ pub mod paths;
 pub mod settings;
 pub mod state;
 pub mod store;
+pub mod wire;
 
 pub use error::CoreError;

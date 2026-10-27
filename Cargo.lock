@@ -1175,6 +1175,8 @@ name = "pawsman-core"
 version = "0.0.0"
 dependencies = [
  "bytes",
+ "fastrand",
+ "insta",
  "pawsman-error",
  "pawsman-model",
  "pawsman-net",

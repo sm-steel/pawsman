@@ -8,9 +8,11 @@ pub const NO_HOME: ErrorCode = ErrorCode::new("core::no_home");
 pub const SETTINGS_INVALID: ErrorCode = ErrorCode::new("core::settings_invalid");
 /// `globals.toml` cannot be read or parsed.
 pub const GLOBALS_INVALID: ErrorCode = ErrorCode::new("core::globals_invalid");
+/// A body file cannot be read.
+pub const BODY_FILE: ErrorCode = ErrorCode::new("core::body_file");
 
 /// Every code, for the registry test.
-pub const ALL: &[ErrorCode] = &[NO_HOME, SETTINGS_INVALID, GLOBALS_INVALID];
+pub const ALL: &[ErrorCode] = &[NO_HOME, SETTINGS_INVALID, GLOBALS_INVALID, BODY_FILE];
 
 #[cfg(test)]
 mod tests {
