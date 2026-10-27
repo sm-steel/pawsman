@@ -552,7 +552,7 @@ mod tests {
             let id = RequestId::new(n);
             state.apply(
                 Event::Send {
-                    id: id,
+                    id,
                     at: std::time::UNIX_EPOCH,
                     seed: 1,
                 },
@@ -737,7 +737,7 @@ mod tests {
             let id = RequestId::new(1);
             st.apply(
                 Event::Send {
-                    id: id,
+                    id,
                     at: std::time::UNIX_EPOCH,
                     seed: 1,
                 },

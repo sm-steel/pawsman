@@ -149,7 +149,7 @@ fn visual_main_view() {
     let id = RequestId::new(1);
     st.apply(
         Event::Send {
-            id: id,
+            id,
             at: std::time::UNIX_EPOCH,
             seed: 1,
         },

@@ -280,8 +280,9 @@ impl AppState {
             seed,
         );
         let (resolved, trace) = match resolved {
-            Ok(done) => done,
-            Err(err) => return self.unresolved(id, &err),
+            None => return Vec::new(),
+            Some(Ok(done)) => done,
+            Some(Err(err)) => return self.unresolved(id, &err),
         };
         let mut sources: Vec<String> = Vec::new();
         for source in trace.entries().iter().map(|e| e.source().to_string()) {
@@ -348,7 +349,6 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::time::Duration;
 
-    use pawsman_error::ErrorInfo as _;
     use pawsman_model::SourceFile;
     use pawsman_model::trace::TraceValue;
 
