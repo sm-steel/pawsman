@@ -119,13 +119,25 @@ impl Net {
         config: NetConfig,
         sink: impl Fn(NetEvent) + Send + Sync + 'static,
     ) -> Result<Self, NetError> {
+        let tls = tls_config().map(Arc::new).map_err(|e| e.to_string());
+        Self::start_with_tls(config, tls, sink)
+    }
+
+    /// Starts with a given TLS setup; `Err` holds why there is none.
+    pub(crate) fn start_with_tls(
+        config: NetConfig,
+        tls: Result<Arc<rustls::ClientConfig>, String>,
+        sink: impl Fn(NetEvent) + Send + Sync + 'static,
+    ) -> Result<Self, NetError> {
+        if let Err(reason) = &tls {
+            tracing::warn!(%reason, "no TLS trust store; HTTPS requests will fail");
+        }
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("pawsman-net-worker")
             .enable_all()
             .build()
             .map_err(|e| NetError::start(&e.to_string()))?;
-        let tls = Arc::new(tls_config()?);
         let (tx, rx) = unbounded_channel();
         let loop_tx = tx.clone();
         let sink: Sink = Arc::new(sink);
@@ -189,7 +201,7 @@ async fn run(
     tx: UnboundedSender<Command>,
     sink: Sink,
     config: NetConfig,
-    tls: Arc<rustls::ClientConfig>,
+    tls: crate::send::Tls,
 ) {
     // A request id sent again while in flight cancels the old run; `seq` tells the runs apart.
     let mut tokens: BTreeMap<RequestId, (u64, CancellationToken)> = BTreeMap::new();
@@ -203,7 +215,7 @@ async fn run(
                 if let Some((_, old)) = tokens.insert(id, (run, token.clone())) {
                     old.cancel();
                 }
-                let (sink, tx, tls) = (Arc::clone(&sink), tx.clone(), Arc::clone(&tls));
+                let (sink, tx, tls) = (Arc::clone(&sink), tx.clone(), tls.clone());
                 tokio::spawn(async move {
                     let event = one(id, &outgoing, config, tls, &token).await;
                     sink(event);
@@ -234,7 +246,7 @@ async fn one(
     id: RequestId,
     outgoing: &Outgoing,
     config: NetConfig,
-    tls: Arc<rustls::ClientConfig>,
+    tls: crate::send::Tls,
     token: &CancellationToken,
 ) -> NetEvent {
     let started = std::time::Instant::now();
@@ -268,5 +280,56 @@ async fn one(
             info!(method, host, path, code = %error.code(), ms, "request failed");
             NetEvent::Failed { id, error }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+
+    use pawsman_test_support::fake_http::{FakeHttp, Reply};
+
+    use super::*;
+    use crate::Outgoing;
+
+    fn get(url: &str) -> Outgoing {
+        Outgoing::new(
+            "GET",
+            url,
+            &[],
+            bytes::Bytes::new(),
+            pawsman_model::Redactor::default(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn without_trusted_certificates_http_works_and_https_fails_as_tls() {
+        let fake = FakeHttp::start();
+        fake.route("GET", "/a", Reply::new(200));
+        let (tx, rx) = mpsc::channel();
+        let net = Net::start_with_tls(
+            NetConfig::new(),
+            Err("No CA certificates were loaded from the system".to_owned()),
+            move |e| {
+                let _ = tx.send(e);
+            },
+        )
+        .unwrap();
+
+        net.send(RequestId::new(1), get(&fake.url("/a")));
+        let http = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        net.send(RequestId::new(2), get("https://127.0.0.1:1/"));
+        let https = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+
+        assert!(
+            matches!(http, NetEvent::Done { .. }),
+            "plain HTTP still works: {http:?}"
+        );
+        let NetEvent::Failed { error, .. } = https else {
+            panic!("{https:?}");
+        };
+        assert_eq!(error.code(), crate::codes::TLS, "{error}");
+        assert!(error.to_string().contains("No CA certificates"), "{error}");
     }
 }

@@ -477,7 +477,10 @@ pub fn run(mut options: Options) -> Result<(), TuiError> {
     let engine = Engine::start(options.engine_setup(), move |snapshot| {
         let _ = snapshots.send(Msg::Snapshot(snapshot));
     })
-    .inspect_err(|err| notices.push(Notice::from_error(err)))
+    .inspect_err(|err| {
+        tracing::warn!(%err, "engine did not start");
+        notices.push(Notice::from_error(err));
+    })
     .ok();
     let backend = CrosstermBackend::new(BufWriter::with_capacity(1 << 16, term.writer()?));
     let splash = options.splash();
