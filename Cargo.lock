@@ -1158,6 +1158,7 @@ version = "0.0.0"
 name = "pawsman-model"
 version = "0.0.0"
 dependencies = [
+ "insta",
  "pawsman-error",
  "pawsman-test-support",
  "proptest",

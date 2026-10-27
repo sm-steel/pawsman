@@ -8,8 +8,9 @@ pub mod format;
 mod manifest;
 mod request;
 pub mod template;
+pub mod write;
 
 pub use collection::{Collection, Entry, EntryKind};
 pub use error::ModelError;
 pub use manifest::Manifest;
-pub use request::{Request, RequestId};
+pub use request::{Body, Content, Part, PartValue, Request, RequestId, Script};

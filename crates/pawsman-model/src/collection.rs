@@ -7,7 +7,7 @@ use crate::{Manifest, ModelError, Request, RequestId};
 const MANIFEST: &str = "pawsman.toml";
 
 /// A collection and its entries.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Collection {
     root: PathBuf,
     manifest: Manifest,
@@ -15,7 +15,7 @@ pub struct Collection {
 }
 
 /// One request file, parsed or not.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Entry {
     id: RequestId,
     path: PathBuf,
@@ -23,7 +23,7 @@ pub struct Entry {
 }
 
 /// What a file turned out to be.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum EntryKind {
     /// A valid request.
@@ -51,7 +51,7 @@ impl Collection {
         let entries = (1..)
             .zip(files)
             .map(|(n, (path, text))| {
-                let kind = match Request::parse(&text, &path) {
+                let kind = match Request::parse(&text, &path, &|_| None) {
                     Ok(request) => EntryKind::Request(request),
                     Err(err) => EntryKind::Invalid(err),
                 };

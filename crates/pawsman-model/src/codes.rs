@@ -10,9 +10,17 @@ pub const INVALID_FILE: ErrorCode = ErrorCode::new("model::invalid_file");
 pub const BAD_TEMPLATE: ErrorCode = ErrorCode::new("model::bad_template");
 /// A collection uses a newer format than this build reads.
 pub const FORMAT_TOO_NEW: ErrorCode = ErrorCode::new("model::format_too_new");
+/// A request names a sidecar body file that does not exist.
+pub const MISSING_SIDECAR: ErrorCode = ErrorCode::new("model::missing_sidecar");
 
 /// Every code, for the registry test.
-pub const ALL: &[ErrorCode] = &[NOT_A_COLLECTION, INVALID_FILE, BAD_TEMPLATE, FORMAT_TOO_NEW];
+pub const ALL: &[ErrorCode] = &[
+    NOT_A_COLLECTION,
+    INVALID_FILE,
+    BAD_TEMPLATE,
+    FORMAT_TOO_NEW,
+    MISSING_SIDECAR,
+];
 
 #[cfg(test)]
 mod tests {
