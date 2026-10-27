@@ -14,6 +14,10 @@ pub const FORMAT_TOO_NEW: ErrorCode = ErrorCode::new("model::format_too_new");
 pub const MISSING_SIDECAR: ErrorCode = ErrorCode::new("model::missing_sidecar");
 /// An environment declares a secret that has no value.
 pub const MISSING_SECRET: ErrorCode = ErrorCode::new("model::missing_secret");
+/// A `{{name}}` is defined in no scope.
+pub const UNKNOWN_VAR: ErrorCode = ErrorCode::new("model::unknown_var");
+/// Variables refer to each other in a loop.
+pub const VAR_CYCLE: ErrorCode = ErrorCode::new("model::var_cycle");
 
 /// Every code, for the registry test.
 pub const ALL: &[ErrorCode] = &[
@@ -22,6 +26,9 @@ pub const ALL: &[ErrorCode] = &[
     BAD_TEMPLATE,
     FORMAT_TOO_NEW,
     MISSING_SIDECAR,
+    MISSING_SECRET,
+    UNKNOWN_VAR,
+    VAR_CYCLE,
 ];
 
 #[cfg(test)]
