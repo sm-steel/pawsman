@@ -8,6 +8,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+bytes.workspace = true
 pawsman-error.workspace = true
 pawsman-model.workspace = true
 pawsman-net.workspace = true

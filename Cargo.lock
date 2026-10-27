@@ -1174,6 +1174,7 @@ dependencies = [
 name = "pawsman-core"
 version = "0.0.0"
 dependencies = [
+ "bytes",
  "pawsman-error",
  "pawsman-model",
  "pawsman-net",
@@ -1221,11 +1222,13 @@ dependencies = [
  "rstest",
  "rustls",
  "rustls-platform-verifier",
+ "secrecy",
  "tempfile",
  "tokio",
  "tokio-rustls",
  "tokio-util",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

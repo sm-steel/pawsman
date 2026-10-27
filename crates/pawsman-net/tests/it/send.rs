@@ -8,8 +8,9 @@
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use bytes::Bytes;
 use pawsman_error::ErrorInfo as _;
-use pawsman_model::RequestId;
+use pawsman_model::{Redactor, RequestId};
 use pawsman_net::{Body, Net, NetConfig, NetEvent, Outgoing, codes};
 use pawsman_test_support::fake_http::{FakeHttp, Reply};
 
@@ -33,7 +34,7 @@ fn id(n: u32) -> RequestId {
 }
 
 fn get(url: &str) -> Outgoing {
-    Outgoing::new("GET", url, &[], None).unwrap()
+    Outgoing::new("GET", url, &[], Bytes::new(), Redactor::default()).unwrap()
 }
 
 #[test]
@@ -54,7 +55,8 @@ fn a_get_returns_status_headers_and_body() {
             "GET",
             &fake.url("/users?page=2"),
             &[("Accept".into(), "application/json".into())],
-            None,
+            Bytes::new(),
+            Redactor::default(),
         )
         .unwrap(),
     );
@@ -101,7 +103,14 @@ fn a_post_sends_its_body() {
 
     net.send(
         id(1),
-        Outgoing::new("POST", &fake.url("/echo"), &[], Some("{\"a\":1}")).unwrap(),
+        Outgoing::new(
+            "POST",
+            &fake.url("/echo"),
+            &[],
+            Bytes::from_static(b"{\"a\":1}"),
+            Redactor::default(),
+        )
+        .unwrap(),
     );
     let NetEvent::Done { response, .. } = next(&events) else {
         panic!("done")
@@ -300,7 +309,14 @@ fn a_post_without_a_body_says_content_length_zero() {
 
     net.send(
         id(1),
-        Outgoing::new("POST", &fake.url("/logout"), &[], None).unwrap(),
+        Outgoing::new(
+            "POST",
+            &fake.url("/logout"),
+            &[],
+            Bytes::new(),
+            Redactor::default(),
+        )
+        .unwrap(),
     );
     next(&events);
 

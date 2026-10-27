@@ -1,7 +1,10 @@
 //! A request ready to send: method, URL, headers and body, already validated.
 
+use std::borrow::Cow;
+
 use bytes::Bytes;
 use http::{HeaderMap, HeaderName, HeaderValue, Method, Uri};
+use pawsman_model::Redactor;
 
 use crate::NetError;
 
@@ -12,10 +15,11 @@ pub struct Outgoing {
     uri: Uri,
     headers: HeaderMap,
     body: Bytes,
+    redactor: Redactor,
 }
 
 impl Outgoing {
-    /// Validates the parts of a request.
+    /// Validates the parts of a request; `redactor` hides its secrets in logs and errors.
     ///
     /// # Errors
     ///
@@ -24,7 +28,8 @@ impl Outgoing {
         method: &str,
         url: &str,
         headers: &[(String, String)],
-        body: Option<&str>,
+        body: Bytes,
+        redactor: Redactor,
     ) -> Result<Self, NetError> {
         let method = Method::from_bytes(method.as_bytes())
             .map_err(|_| NetError::invalid_request("method", method))?;
@@ -49,11 +54,24 @@ impl Outgoing {
             method,
             uri,
             headers: map,
-            body: body.map_or_else(Bytes::new, |b| Bytes::copy_from_slice(b.as_bytes())),
+            body,
+            redactor,
         })
     }
 
-    /// The host without IPv6 brackets, for resolving, TLS and logs.
+    /// The host for logs, secrets hidden.
+    #[must_use]
+    pub fn log_host(&self) -> Cow<'_, str> {
+        Cow::Borrowed(self.host())
+    }
+
+    /// The path for logs, without the query, secrets hidden.
+    #[must_use]
+    pub fn log_path(&self) -> Cow<'_, str> {
+        Cow::Borrowed(self.path())
+    }
+
+    /// The host without IPv6 brackets, for resolving and TLS.
     #[must_use]
     pub fn host(&self) -> &str {
         let host = self.uri.host().unwrap_or("");
@@ -102,7 +120,7 @@ mod tests {
     #[case::empty("")]
     #[case::userinfo("http://user:pass@api.example.com/x")]
     fn bad_urls_are_invalid_requests(#[case] url: &str) {
-        let err = Outgoing::new("GET", url, &[], None).unwrap_err();
+        let err = Outgoing::new("GET", url, &[], Bytes::new(), Redactor::default()).unwrap_err();
 
         assert_eq!(err.code(), crate::codes::INVALID_REQUEST, "{url}");
         assert!(
@@ -113,11 +131,24 @@ mod tests {
 
     #[test]
     fn bad_methods_and_headers_are_invalid_requests() {
-        let method = Outgoing::new("GE T", "http://h/", &[], None).unwrap_err();
-        let header = Outgoing::new("GET", "http://h/", &[("Bad Name".into(), "v".into())], None)
-            .unwrap_err();
-        let value =
-            Outgoing::new("GET", "http://h/", &[("X".into(), "a\nb".into())], None).unwrap_err();
+        let method =
+            Outgoing::new("GE T", "http://h/", &[], Bytes::new(), Redactor::default()).unwrap_err();
+        let header = Outgoing::new(
+            "GET",
+            "http://h/",
+            &[("Bad Name".into(), "v".into())],
+            Bytes::new(),
+            Redactor::default(),
+        )
+        .unwrap_err();
+        let value = Outgoing::new(
+            "GET",
+            "http://h/",
+            &[("X".into(), "a\nb".into())],
+            Bytes::new(),
+            Redactor::default(),
+        )
+        .unwrap_err();
 
         for (err, what) in [
             (method, "method"),
@@ -132,13 +163,59 @@ mod tests {
         }
     }
 
+    fn secret(value: &str) -> Redactor {
+        Redactor::new(vec![secrecy::SecretString::from(value)])
+    }
+
+    #[test]
+    fn invalid_values_are_redacted_in_errors() {
+        let url = Outgoing::new(
+            "GET",
+            "http://h/s3 cr3t",
+            &[],
+            Bytes::new(),
+            secret("s3 cr3t"),
+        )
+        .unwrap_err();
+        let header = Outgoing::new(
+            "GET",
+            "http://h/",
+            &[("X".into(), "tok\nen".into())],
+            Bytes::new(),
+            secret("tok\nen"),
+        )
+        .unwrap_err();
+
+        assert_eq!(url.to_string(), "invalid url `http://h/***`", "url");
+        assert!(!header.to_string().contains("tok"), "header: {header}");
+    }
+
+    #[test]
+    fn log_host_and_path_are_redacted() {
+        let o = Outgoing::new(
+            "GET",
+            "http://s3cr3t.example/u/s3cr3t?q=s3cr3t",
+            &[],
+            Bytes::new(),
+            secret("s3cr3t"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            (o.log_host(), o.log_path()),
+            ("***.example".into(), "/u/***".into())
+        );
+        assert_eq!(o.host(), "s3cr3t.example", "the real host still resolves");
+    }
+
     #[test]
     fn a_valid_request_keeps_its_parts() {
         let o = Outgoing::new(
             "POST",
             "https://api.example.com:8443/users?token=secret",
             &[("X-A".into(), "1".into()), ("X-A".into(), "2".into())],
-            Some("{}"),
+            Bytes::from_static(b"{}"),
+            Redactor::default(),
         )
         .unwrap();
 

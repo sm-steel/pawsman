@@ -198,7 +198,10 @@ impl AppState {
             request.method(),
             request.url(),
             request.headers(),
-            request.body_text(),
+            request.body_text().map_or_else(bytes::Bytes::new, |b| {
+                bytes::Bytes::copy_from_slice(b.as_bytes())
+            }),
+            pawsman_model::Redactor::default(),
         );
         match outgoing {
             Ok(outgoing) => {
