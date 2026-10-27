@@ -51,12 +51,14 @@ impl PartialEq for Msg {
 }
 
 /// What the UI asks the engine to do.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum UiCommand {
     /// Send this request.
     Send(RequestId),
     /// Cancel it.
     Cancel(RequestId),
+    /// Resolve in this environment; `None` for none.
+    SelectEnv(Option<String>),
 }
 
 /// Whether the startup splash plays.
@@ -447,6 +449,7 @@ fn event_loop<B: Backend<Error = std::io::Error>>(
             match (engine, command) {
                 (Some(engine), UiCommand::Send(id)) => engine.send(id),
                 (Some(engine), UiCommand::Cancel(id)) => engine.cancel(id),
+                (Some(engine), UiCommand::SelectEnv(env)) => engine.select_env(env),
                 (None, _) => {}
             }
         }
@@ -813,6 +816,173 @@ mod tests {
                 let mut app = app_with(&mut st);
                 render(&mut app, w, h, Duration::ZERO);
             }
+        }
+
+        const TREE: &[(&str, &str)] = &[
+            ("a/one.req.toml", "name = \"One\"\nurl = \"http://h/1\"\n"),
+            ("a/_folder.toml", "name = \"Alpha\"\n"),
+            ("b/two.req.toml", "name = \"Two\"\nurl = \"{{base}}/2\"\n"),
+            ("b/_folder.toml", "title = \"broken\"\n"),
+            ("top.req.toml", "name = \"Top\"\nurl = \"http://h/top\"\n"),
+        ];
+
+        const ENVS: &[(&str, &str)] = &[
+            (
+                "me.req.toml",
+                "name = \"Me\"\nurl = \"{{base}}/me\"\n[headers]\nAuthorization = \"Bearer {{token}}\"\n",
+            ),
+            (
+                "envs/dev.env.toml",
+                "secrets = [\"token\"]\n[vars]\nbase = \"http://dev\"\n",
+            ),
+            ("envs/prod.env.toml", "[vars]\nbase = \"http://prod\"\n"),
+            ("envs/broken.env.toml", "vars = 1\n"),
+        ];
+
+        fn state_with(files: &[(&str, &str)], env: &[(&str, &str)]) -> AppState {
+            let files = files
+                .iter()
+                .map(|(n, t)| {
+                    pawsman_model::SourceFile::new(PathBuf::from(n), t.as_bytes().to_vec())
+                })
+                .chain(std::iter::once(pawsman_model::SourceFile::new(
+                    "pawsman.toml".into(),
+                    b"format = 1\nname = \"Demo\"\n".to_vec(),
+                )))
+                .collect();
+            AppState::new(
+                Collection::from_files(Path::new("/demo"), files),
+                pawsman_core::resolve::Context::new(
+                    vec![],
+                    EnvSnapshot::from_pairs(env.iter().copied()),
+                ),
+            )
+        }
+
+        fn char_key(c: char) -> Msg {
+            key(Chord::plain(KeyCode::Char(c)))
+        }
+
+        fn press(app: &mut App, msgs: impl IntoIterator<Item = Msg>) {
+            for msg in msgs {
+                app.update(msg, Duration::ZERO).unwrap();
+            }
+        }
+
+        fn dev(st: &mut AppState) -> App {
+            st.apply(Event::SelectEnv(Some("dev".into())), Instant::now());
+            app_with(st)
+        }
+
+        #[test]
+        fn down_skips_folder_rows() {
+            let mut app = app_with(&mut state(TREE));
+
+            press(
+                &mut app,
+                [
+                    key(Chord::plain(KeyCode::Down)),
+                    key(Chord::plain(KeyCode::F(5))),
+                ],
+            );
+
+            assert_eq!(
+                app.take_commands(),
+                vec![UiCommand::Send(RequestId::new(2))],
+                "from a/one straight to b/two, past the `b` folder row"
+            );
+        }
+
+        #[test]
+        fn enter_in_the_picker_queues_select_env() {
+            let mut app = app_with(&mut state_with(ENVS, &[]));
+
+            press(
+                &mut app,
+                [
+                    char_key('e'),
+                    key(Chord::plain(KeyCode::Down)),
+                    key(Chord::plain(KeyCode::Enter)),
+                ],
+            );
+
+            assert_eq!(
+                app.take_commands(),
+                vec![UiCommand::SelectEnv(Some("dev".into()))],
+                "none → dev: the highlight skips the broken one, which sorts first"
+            );
+        }
+
+        #[test]
+        fn esc_closes_the_picker_without_a_command() {
+            let mut app = app_with(&mut state_with(ENVS, &[]));
+
+            press(&mut app, [char_key('e'), key(Chord::plain(KeyCode::Esc))]);
+
+            assert!(app.take_commands().is_empty(), "nothing chosen");
+            let text = screen(&render(&mut app, 160, 40, Duration::ZERO));
+            assert!(!text.contains("(invalid)"), "picker closed:\n{text}");
+        }
+
+        #[test]
+        fn a_secret_is_never_drawn() {
+            let mut st = state_with(ENVS, &[("PAWSMAN_SECRET_TOKEN", "s3cr3t")]);
+            let mut app = dev(&mut st);
+            press(&mut app, [char_key('t')]);
+
+            let text = screen(&render(&mut app, 160, 40, Duration::ZERO));
+
+            assert!(!text.contains("s3cr3t"), "masked:\n{text}");
+            assert!(text.contains("Bearer ••••••"), "mask shown:\n{text}");
+            assert!(text.contains("http://dev/me"), "resolved url:\n{text}");
+        }
+
+        #[test]
+        fn snapshot_160x40_tree() {
+            let mut app = app_with(&mut state(TREE));
+
+            insta::assert_snapshot!(render(&mut app, 160, 40, Duration::ZERO).backend());
+        }
+
+        #[test]
+        fn snapshot_160x40_picker_with_a_broken_env() {
+            let mut app = app_with(&mut state_with(ENVS, &[]));
+            press(&mut app, [char_key('e')]);
+
+            insta::assert_snapshot!(render(&mut app, 160, 40, Duration::ZERO).backend());
+        }
+
+        #[test]
+        fn snapshot_160x40_trace_with_a_secret() {
+            let mut st = state_with(ENVS, &[("PAWSMAN_SECRET_TOKEN", "s3cr3t")]);
+            let mut app = dev(&mut st);
+            press(&mut app, [char_key('t')]);
+
+            insta::assert_snapshot!(render(&mut app, 160, 40, Duration::ZERO).backend());
+        }
+
+        #[test]
+        fn snapshot_160x40_unresolved() {
+            let mut st = state_with(ENVS, &[]);
+            st.apply(
+                Event::Send {
+                    id: RequestId::new(1),
+                    at: std::time::UNIX_EPOCH,
+                    seed: 1,
+                },
+                Instant::now(),
+            );
+            let mut app = app_with(&mut st);
+
+            insta::assert_snapshot!(render(&mut app, 160, 40, Duration::ZERO).backend());
+        }
+
+        #[test]
+        fn snapshot_60x20_sidebar_with_env_row() {
+            let mut st = state_with(ENVS, &[]);
+            let mut app = dev(&mut st);
+
+            insta::assert_snapshot!(render(&mut app, 60, 20, Duration::ZERO).backend());
         }
     }
 
