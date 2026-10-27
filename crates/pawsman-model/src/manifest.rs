@@ -2,7 +2,17 @@
 
 use std::path::Path;
 
-use crate::ModelError;
+use serde::Deserialize;
+
+use crate::{ModelError, format};
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManifestFile {
+    name: String,
+    vars: Option<toml::Table>,
+    headers: Option<toml::Table>,
+}
 
 /// A parsed `pawsman.toml`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,8 +30,18 @@ impl Manifest {
     ///
     /// `model::format_too_new` for a newer format; `model::invalid_file` for anything else wrong.
     pub fn parse(text: &str, path: &Path) -> Result<Self, ModelError> {
-        let _ = text;
-        Err(ModelError::invalid_file(path, "todo"))
+        let mut table: toml::Table =
+            toml::from_str(text).map_err(|e| ModelError::invalid_file(path, e.message()))?;
+        let version = read_format(&mut table, path)?;
+        let table = format::migrate(table, version, path)?;
+        let file = ManifestFile::deserialize(table)
+            .map_err(|e| ModelError::invalid_file(path, e.message()))?;
+        Ok(Self {
+            format: version,
+            name: file.name,
+            vars: strings(file.vars, "vars", path)?,
+            headers: strings(file.headers, "headers", path)?,
+        })
     }
 
     /// The format the file was written in.
@@ -55,8 +75,26 @@ pub(crate) fn strings(
     section: &str,
     path: &Path,
 ) -> Result<Vec<(String, String)>, ModelError> {
-    let _ = (table, section);
-    Err(ModelError::invalid_file(path, "todo"))
+    table
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(key, value)| match value {
+            toml::Value::String(value) => Ok((key, value)),
+            _ => Err(ModelError::invalid_file(
+                path,
+                &format!("`{section}.{key}` must be a string"),
+            )),
+        })
+        .collect()
+}
+
+/// Takes `format` out of a manifest table.
+fn read_format(table: &mut toml::Table, path: &Path) -> Result<u32, ModelError> {
+    let bad = || ModelError::invalid_file(path, "`format` must be an integer");
+    match table.remove("format") {
+        Some(toml::Value::Integer(n)) => u32::try_from(n).map_err(|_| bad()),
+        _ => Err(bad()),
+    }
 }
 
 #[cfg(test)]

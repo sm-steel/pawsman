@@ -25,6 +25,10 @@ enum Kind {
         path: PathBuf,
         reason: String,
     },
+    FormatTooNew {
+        path: PathBuf,
+        format: u32,
+    },
     BadTemplate {
         field: String,
         at: usize,
@@ -50,6 +54,17 @@ impl ModelError {
             kind: Kind::InvalidFile {
                 path: path.to_owned(),
                 reason: reason.replace('\n', " ").trim().to_owned(),
+            },
+        }
+    }
+
+    /// `path` uses a format newer than this build reads.
+    #[must_use]
+    pub fn format_too_new(path: &Path, format: u32) -> Self {
+        Self {
+            kind: Kind::FormatTooNew {
+                path: path.to_owned(),
+                format,
             },
         }
     }
@@ -80,6 +95,12 @@ impl fmt::Display for ModelError {
             Kind::InvalidFile { path, reason } => {
                 write!(f, "`{}` is not valid: {reason}", path.display())
             }
+            Kind::FormatTooNew { path, format } => write!(
+                f,
+                "`{}` uses format {format}; this pawsman reads up to {}",
+                path.display(),
+                crate::format::CURRENT
+            ),
             Kind::BadTemplate { field, at, reason } => {
                 write!(f, "`{field}` has a bad template at {at}: {reason}")
             }
@@ -94,6 +115,7 @@ impl ErrorInfo for ModelError {
         match self.kind {
             Kind::NotACollection { .. } => codes::NOT_A_COLLECTION,
             Kind::InvalidFile { .. } => codes::INVALID_FILE,
+            Kind::FormatTooNew { .. } => codes::FORMAT_TOO_NEW,
             Kind::BadTemplate { .. } => codes::BAD_TEMPLATE,
         }
     }
@@ -104,6 +126,9 @@ impl ErrorInfo for ModelError {
                 "Open a directory with a `pawsman.toml`, or create one with `format = 1`."
             }
             Kind::InvalidFile { .. } => "Fix the file; the other requests still work.",
+            Kind::FormatTooNew { .. } => {
+                "Update pawsman; this collection was written by a newer version."
+            }
             Kind::BadTemplate { .. } => {
                 "Close every `{{` with `}}`, or write `\\{{` for a literal `{{`."
             }

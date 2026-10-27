@@ -2,16 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
-
-use crate::{ModelError, Request, RequestId};
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Manifest {
-    format: u32,
-    name: String,
-}
+use crate::{Manifest, ModelError, Request, RequestId};
 
 const MANIFEST: &str = "pawsman.toml";
 
@@ -19,7 +10,7 @@ const MANIFEST: &str = "pawsman.toml";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Collection {
     root: PathBuf,
-    name: String,
+    manifest: Manifest,
     entries: Vec<Entry>,
 }
 
@@ -54,14 +45,7 @@ impl Collection {
     ) -> Result<Self, ModelError> {
         let manifest = manifest.ok_or_else(|| ModelError::not_a_collection(root))?;
         let manifest_path = root.join(MANIFEST);
-        let manifest: Manifest = toml::from_str(manifest)
-            .map_err(|e| ModelError::invalid_file(&manifest_path, e.message()))?;
-        if manifest.format != 1 {
-            return Err(ModelError::invalid_file(
-                &manifest_path,
-                &format!("format `{}` is not supported", manifest.format),
-            ));
-        }
+        let manifest = Manifest::parse(manifest, &manifest_path)?;
         let mut files = files;
         files.sort_by(|a, b| a.0.file_name().cmp(&b.0.file_name()));
         let entries = (1..)
@@ -80,7 +64,7 @@ impl Collection {
             .collect();
         Ok(Self {
             root: root.to_owned(),
-            name: manifest.name,
+            manifest,
             entries,
         })
     }
@@ -94,7 +78,13 @@ impl Collection {
     /// The display name.
     #[must_use]
     pub fn name(&self) -> &str {
-        &self.name
+        self.manifest.name()
+    }
+
+    /// The parsed `pawsman.toml`.
+    #[must_use]
+    pub fn manifest(&self) -> &Manifest {
+        &self.manifest
     }
 
     /// Every entry, sorted by file name.
@@ -216,13 +206,13 @@ mod tests {
 
     #[test]
     fn a_broken_manifest_is_an_invalid_file() {
-        for manifest in [
-            "format = 2\nname = \"x\"\n",
-            "name = \"x\"\n",
-            "format = 1\nname = \"x\"\nextra = 1\n",
-        ] {
+        for manifest in ["name = \"x\"\n", "format = 1\nname = \"x\"\nextra = 1\n"] {
             let err = Collection::from_files(Path::new("/c"), Some(manifest), vec![]).unwrap_err();
             assert_eq!(err.code(), crate::codes::INVALID_FILE, "{manifest:?}");
         }
+        let newer =
+            Collection::from_files(Path::new("/c"), Some("format = 2\nname = \"x\"\n"), vec![])
+                .unwrap_err();
+        assert_eq!(newer.code(), crate::codes::FORMAT_TOO_NEW, "newer format");
     }
 }

@@ -14,8 +14,11 @@ pub const CURRENT: u32 = 1;
 ///
 /// `model::format_too_new` for a format newer than [`CURRENT`]; `model::invalid_file` for `0`.
 pub fn migrate(table: toml::Table, from: u32, path: &Path) -> Result<toml::Table, ModelError> {
-    let _ = (from, path);
-    Err(ModelError::invalid_file(Path::new("todo"), "todo")).map(|()| table)
+    match from {
+        0 => Err(ModelError::invalid_file(path, "`format` must be 1 or more")),
+        CURRENT => Ok(table),
+        _ => Err(ModelError::format_too_new(path, from)),
+    }
 }
 
 #[cfg(test)]
