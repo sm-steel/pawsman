@@ -115,10 +115,10 @@ fn demo_state() -> pawsman_core::state::AppState {
             b"format = 1\nname = \"Demo\"\n".to_vec(),
         )))
     .collect();
-    pawsman_core::state::AppState::new(pawsman_model::Collection::from_files(
-        Path::new("/demo"),
-        files,
-    ))
+    pawsman_core::state::AppState::new(
+        pawsman_model::Collection::from_files(Path::new("/demo"), files),
+        pawsman_core::resolve::Context::default(),
+    )
 }
 
 fn main_app(state: &mut pawsman_core::state::AppState, downs: usize) -> App {
@@ -147,13 +147,34 @@ fn visual_main_view() {
     let mut r = png::Renderer::new();
     let mut st = demo_state();
     let id = RequestId::new(1);
-    st.apply(Event::Send(id), Instant::now());
+    st.apply(
+        Event::Send {
+            id: id,
+            at: std::time::UNIX_EPOCH,
+            seed: 1,
+        },
+        Instant::now(),
+    );
     let body = br#"[{"id":1,"name":"Ada Lovelace"},{"id":2,"name":"Grace Hopper"}]"#;
     let response = Response::for_tests(200, body, Duration::from_millis(42));
     st.apply(Event::Net(NetEvent::Done { id, response }), Instant::now());
-    st.apply(Event::Send(RequestId::new(3)), Instant::now());
+    st.apply(
+        Event::Send {
+            id: RequestId::new(3),
+            at: std::time::UNIX_EPOCH,
+            seed: 1,
+        },
+        Instant::now(),
+    );
     let failed = RequestId::new(4);
-    st.apply(Event::Send(failed), Instant::now());
+    st.apply(
+        Event::Send {
+            id: failed,
+            at: std::time::UNIX_EPOCH,
+            seed: 1,
+        },
+        Instant::now(),
+    );
     let error = NetError::connect(
         "127.0.0.1:8787",
         &std::io::Error::other("connection refused"),

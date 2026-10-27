@@ -1,16 +1,18 @@
-//! The engine's state: the collection and every request's status. `apply` is a pure reducer that
-//! returns the effects to run; snapshots are what the UI draws.
+//! The engine's state: the collection, the active environment and every request's status.
+//! `apply` is a pure reducer that returns the effects to run; snapshots are what the UI draws.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 
-#[cfg(test)]
-use pawsman_model::SourceFile;
-use pawsman_model::{Collection, EntryKind, ModelError, RequestId};
+use pawsman_error::ErrorInfo;
+use pawsman_model::{Collection, EntryKind, Environment, ModelError, RequestId};
 use pawsman_net::{NetError, NetEvent, Outgoing, Response};
+use tracing::{debug, info};
 
 use crate::notice::Notice;
+use crate::resolve::{self, Context, Preview};
+use crate::wire;
 
 /// Where a request stands.
 #[derive(Debug, Clone)]
@@ -27,6 +29,8 @@ pub enum RequestStatus {
     Done(Arc<Response>),
     /// Failed.
     Failed(NetError),
+    /// Not sent: a variable, secret or body file could not be resolved.
+    Unresolved(Notice),
     /// Cancelled.
     Cancelled,
 }
@@ -38,6 +42,8 @@ static IDLE: RequestStatus = RequestStatus::Idle;
 pub struct Snapshot {
     collection: Option<Arc<Collection>>,
     load_error: Option<ModelError>,
+    active_env: Option<String>,
+    context: Arc<Context>,
     statuses: BTreeMap<RequestId, RequestStatus>,
     notices: Vec<Notice>,
     generation: u64,
@@ -54,6 +60,26 @@ impl Snapshot {
     #[must_use]
     pub fn load_error(&self) -> Option<&ModelError> {
         self.load_error.as_ref()
+    }
+
+    /// The collection's environments, broken ones included.
+    #[must_use]
+    pub fn environments(&self) -> &[Environment] {
+        self.collection().map_or(&[], Collection::environments)
+    }
+
+    /// The environment requests resolve in.
+    #[must_use]
+    pub fn active_env(&self) -> Option<&str> {
+        self.active_env.as_deref()
+    }
+
+    /// Request `id` as it would be sent now, secrets masked; `None` for no such request.
+    #[must_use]
+    pub fn preview(&self, id: RequestId) -> Option<Result<Preview, Notice>> {
+        let collection = self.collection()?;
+        resolve::preview(collection, id, self.active_env(), &self.context)
+            .map(|r| r.map_err(|e| Notice::from_error(&e)))
     }
 
     /// The status of request `id`.
@@ -87,10 +113,19 @@ impl Snapshot {
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum Event {
-    /// Send request `id`.
-    Send(RequestId),
+    /// Send request `id`; built-ins take the time `at` and random values from `seed`.
+    Send {
+        /// The request.
+        id: RequestId,
+        /// The wall clock for `$timestamp` and `$isoDate`.
+        at: SystemTime,
+        /// The seed for `$uuid`, `$randomInt` and the multipart boundary.
+        seed: u64,
+    },
     /// Cancel request `id`.
     Cancel(RequestId),
+    /// Resolve in this environment from now on; `None` for none.
+    SelectEnv(Option<String>),
     /// The network reported something.
     Net(NetEvent),
 }
@@ -110,24 +145,32 @@ pub enum Effect {
 pub struct AppState {
     collection: Option<Arc<Collection>>,
     load_error: Option<ModelError>,
+    active_env: Option<String>,
+    context: Arc<Context>,
     statuses: BTreeMap<RequestId, RequestStatus>,
     notices: Vec<Notice>,
     generation: u64,
 }
 
 impl AppState {
-    /// State for a collection that loaded, or did not.
+    /// State for a collection that loaded, or did not; its issues become notices.
     #[must_use]
-    pub fn new(load: Result<Collection, ModelError>) -> Self {
+    pub fn new(load: Result<Collection, ModelError>, context: Context) -> Self {
         let (collection, load_error) = match load {
             Ok(collection) => (Some(Arc::new(collection)), None),
             Err(err) => (None, Some(err)),
         };
+        let notices = collection
+            .as_ref()
+            .map(|c| c.issues().iter().map(|i| Notice::from_error(i)).collect())
+            .unwrap_or_default();
         Self {
             collection,
             load_error,
+            active_env: None,
+            context: Arc::new(context),
             statuses: BTreeMap::new(),
-            notices: Vec::new(),
+            notices,
             generation: 0,
         }
     }
@@ -138,6 +181,8 @@ impl AppState {
         Self {
             collection: None,
             load_error: None,
+            active_env: None,
+            context: Arc::new(Context::default()),
             statuses: BTreeMap::new(),
             notices: Vec::new(),
             generation: 0,
@@ -150,16 +195,25 @@ impl AppState {
         self.generation
     }
 
+    /// Raises `notice` with the next snapshot.
+    pub fn notify(&mut self, notice: Notice) {
+        self.notice(notice);
+    }
+
     /// Applies `event` at `now`; returns what to run.
     pub fn apply(&mut self, event: Event, now: Instant) -> Vec<Effect> {
         match event {
-            Event::Send(id) => self.send(id, now),
+            Event::Send { id, at, seed } => self.send(id, now, at, seed),
             Event::Cancel(id) => {
                 if matches!(self.statuses.get(&id), Some(RequestStatus::Sending { .. })) {
                     vec![Effect::Cancel(id)]
                 } else {
                     Vec::new()
                 }
+            }
+            Event::SelectEnv(env) => {
+                self.select_env(env);
+                Vec::new()
             }
             Event::Net(event) => {
                 let (id, status) = match event {
@@ -176,40 +230,79 @@ impl AppState {
         }
     }
 
-    fn send(&mut self, id: RequestId, now: Instant) -> Vec<Effect> {
+    fn select_env(&mut self, env: Option<String>) {
+        if let Some(name) = env.as_deref() {
+            let found = self
+                .collection
+                .as_ref()
+                .and_then(|c| c.environments().iter().find(|e| e.name() == name));
+            match found {
+                None => {
+                    self.notice(Notice::warn(format!("no environment `{name}`")));
+                    return;
+                }
+                Some(e) if let Some(err) = e.error() => {
+                    let notice = Notice::from_error(err);
+                    self.notice(notice);
+                    return;
+                }
+                Some(_) => {}
+            }
+        }
+        info!(
+            env = env.as_deref().unwrap_or("none"),
+            "environment selected"
+        );
+        self.active_env = env;
+        self.generation += 1;
+    }
+
+    fn send(&mut self, id: RequestId, now: Instant, at: SystemTime, seed: u64) -> Vec<Effect> {
         if matches!(self.statuses.get(&id), Some(RequestStatus::Sending { .. })) {
             return Vec::new();
         }
         let Some(collection) = self.collection.clone() else {
             return Vec::new();
         };
-        let Some(entry) = collection.entries().iter().find(|e| e.id() == id) else {
+        let Some(entry) = collection.entry(id) else {
             return Vec::new();
         };
-        let request = match entry.kind() {
-            EntryKind::Request(request) => request,
-            EntryKind::Invalid(err) => {
-                self.notice(Notice::from_error(err));
-                return Vec::new();
+        if let EntryKind::Invalid(err) = entry.kind() {
+            self.notice(Notice::from_error(err));
+            return Vec::new();
+        }
+        let resolved = resolve::resolve(
+            &collection,
+            id,
+            self.active_env.as_deref(),
+            &self.context,
+            at,
+            seed,
+        );
+        let (resolved, trace) = match resolved {
+            Ok(done) => done,
+            Err(err) => return self.unresolved(id, &err),
+        };
+        let mut sources: Vec<String> = Vec::new();
+        for source in trace.entries().iter().map(|e| e.source().to_string()) {
+            if !sources.contains(&source) {
+                sources.push(source);
             }
-            _ => return Vec::new(),
+        }
+        debug!(%id, vars = trace.entries().len(), scopes = ?sources, "interpolated");
+        let wire = match wire::encode(&resolved, collection.root(), seed) {
+            Ok(wire) => wire,
+            Err(err) => return self.unresolved(id, &err),
         };
         let outgoing = Outgoing::new(
-            request.method(),
-            request.url(),
-            request.headers(),
-            request.body_text().map_or_else(bytes::Bytes::new, |b| {
-                bytes::Bytes::copy_from_slice(b.as_bytes())
-            }),
-            pawsman_model::Redactor::default(),
+            resolved.method(),
+            &wire.url,
+            &wire.headers,
+            wire.body,
+            resolved.redactor().clone(),
         );
         match outgoing {
             Ok(outgoing) => {
-                if request.has_template() {
-                    self.notice(Notice::warn(
-                        "variables are not resolved yet; sent as written",
-                    ));
-                }
                 self.set(id, RequestStatus::Sending { since: now });
                 vec![Effect::Send(id, Box::new(outgoing))]
             }
@@ -218,6 +311,12 @@ impl AppState {
                 Vec::new()
             }
         }
+    }
+
+    fn unresolved(&mut self, id: RequestId, err: &dyn ErrorInfo) -> Vec<Effect> {
+        info!(%id, code = %err.code(), "request not resolved");
+        self.set(id, RequestStatus::Unresolved(Notice::from_error(err)));
+        Vec::new()
     }
 
     fn set(&mut self, id: RequestId, status: RequestStatus) {
@@ -235,6 +334,8 @@ impl AppState {
         Arc::new(Snapshot {
             collection: self.collection.clone(),
             load_error: self.load_error.clone(),
+            active_env: self.active_env.clone(),
+            context: Arc::clone(&self.context),
             statuses: self.statuses.clone(),
             notices: std::mem::take(&mut self.notices),
             generation: self.generation,
@@ -248,8 +349,11 @@ mod tests {
     use std::time::Duration;
 
     use pawsman_error::ErrorInfo as _;
+    use pawsman_model::SourceFile;
+    use pawsman_model::trace::TraceValue;
 
     use super::*;
+    use crate::env::EnvSnapshot;
 
     fn id(n: u32) -> RequestId {
         RequestId::new(n)
@@ -280,11 +384,180 @@ mod tests {
         Instant::now()
     }
 
+    fn send(n: u32) -> Event {
+        Event::Send {
+            id: id(n),
+            at: std::time::UNIX_EPOCH,
+            seed: 1,
+        }
+    }
+
+    fn sent_url(effects: &[Effect]) -> Option<String> {
+        match effects {
+            [Effect::Send(_, outgoing)] => Some(outgoing.uri_for_tests()),
+            _ => None,
+        }
+    }
+
+    const ENVS: &[(&str, &str)] = &[
+        ("u.req.toml", "name = \"U\"\nurl = \"{{base}}/u\"\n"),
+        ("envs/dev.env.toml", "[vars]\nbase = \"http://dev\"\n"),
+        ("envs/prod.env.toml", "[vars]\nbase = \"http://prod\"\n"),
+        ("envs/broken.env.toml", "vars = 1\n"),
+    ];
+
+    #[test]
+    fn sending_resolves_against_the_active_environment() {
+        let mut s = AppState::new(Ok(collection(ENVS)), Context::default());
+
+        s.apply(Event::SelectEnv(Some("dev".into())), now());
+        let dev = s.apply(send(1), now());
+        s.apply(Event::Net(NetEvent::Cancelled { id: id(1) }), now());
+        s.apply(Event::SelectEnv(Some("prod".into())), now());
+        let prod = s.apply(send(1), now());
+
+        assert_eq!(sent_url(&dev).as_deref(), Some("http://dev/u"), "dev");
+        assert_eq!(sent_url(&prod).as_deref(), Some("http://prod/u"), "prod");
+        assert_eq!(s.snapshot().active_env(), Some("prod"), "active");
+    }
+
+    #[test]
+    fn an_unknown_var_is_unresolved_and_sends_nothing() {
+        let mut s = AppState::new(Ok(collection(ENVS)), Context::default());
+
+        let effects = s.apply(send(1), now());
+
+        assert!(effects.is_empty(), "nothing sent");
+        assert!(
+            matches!(s.snapshot().status(id(1)), RequestStatus::Unresolved(n) if n.text().starts_with("model::unknown_var")),
+            "{:?}",
+            s.snapshot().status(id(1))
+        );
+    }
+
+    #[test]
+    fn a_missing_secret_is_unresolved_with_the_env_name() {
+        let files = [
+            ("u.req.toml", "name = \"U\"\nurl = \"http://h/{{token}}\"\n"),
+            ("envs/dev.env.toml", "secrets = [\"token\"]\n"),
+        ];
+        let mut s = AppState::new(Ok(collection(&files)), Context::default());
+        s.apply(Event::SelectEnv(Some("dev".into())), now());
+
+        let effects = s.apply(send(1), now());
+
+        assert!(effects.is_empty(), "nothing sent");
+        assert!(
+            matches!(s.snapshot().status(id(1)), RequestStatus::Unresolved(n) if n.text().contains("model::missing_secret") && n.text().contains("env dev")),
+            "{:?}",
+            s.snapshot().status(id(1))
+        );
+    }
+
+    #[test]
+    fn a_secret_from_the_process_env_is_used_and_masked_in_preview() {
+        let files = [
+            (
+                "u.req.toml",
+                "name = \"U\"\nurl = \"http://h/u\"\n[headers]\nAuthorization = \"Bearer {{token}}\"\n",
+            ),
+            ("envs/dev.env.toml", "secrets = [\"token\"]\n"),
+        ];
+        let env = EnvSnapshot::from_pairs([("PAWSMAN_SECRET_TOKEN", "s3cr3t")]);
+        let mut s = AppState::new(Ok(collection(&files)), Context::new(vec![], env));
+        s.apply(Event::SelectEnv(Some("dev".into())), now());
+
+        let effects = s.apply(send(1), now());
+        let preview = s.snapshot().preview(id(1)).unwrap().unwrap();
+
+        let [Effect::Send(_, outgoing)] = effects.as_slice() else {
+            panic!("{effects:?}");
+        };
+        assert_eq!(
+            outgoing.header_for_tests("authorization").as_deref(),
+            Some("Bearer s3cr3t"),
+            "on the wire"
+        );
+        assert_eq!(
+            preview.headers(),
+            &[("Authorization".to_owned(), "Bearer ••••••".to_owned())],
+            "masked"
+        );
+        assert!(
+            preview
+                .trace()
+                .entries()
+                .iter()
+                .all(|e| e.value() == &TraceValue::Secret),
+            "{:?}",
+            preview.trace()
+        );
+        assert_eq!(preview.env(), Some("dev"), "env named");
+    }
+
+    #[test]
+    fn dotenv_and_globals_resolve() {
+        let files = [
+            ("u.req.toml", "name = \"U\"\nurl = \"{{host}}/{{token}}\"\n"),
+            ("envs/dev.env.toml", "secrets = [\"token\"]\n"),
+            (".env", "token=from-dotenv\n"),
+        ];
+        let context = Context::new(
+            vec![("host".into(), "http://global".into())],
+            EnvSnapshot::default(),
+        );
+        let mut s = AppState::new(Ok(collection(&files)), context);
+        s.apply(Event::SelectEnv(Some("dev".into())), now());
+
+        let effects = s.apply(send(1), now());
+
+        assert_eq!(
+            sent_url(&effects).as_deref(),
+            Some("http://global/from-dotenv")
+        );
+    }
+
+    #[test]
+    fn selecting_a_broken_or_unknown_env_is_a_notice() {
+        let mut s = AppState::new(Ok(collection(ENVS)), Context::default());
+
+        s.apply(Event::SelectEnv(Some("broken".into())), now());
+        s.apply(Event::SelectEnv(Some("nope".into())), now());
+        let snap = s.snapshot();
+
+        assert_eq!(snap.active_env(), None, "unchanged");
+        assert_eq!(snap.notices().len(), 2, "{:?}", snap.notices());
+    }
+
+    #[test]
+    fn preview_uses_placeholders_for_builtins() {
+        let files = [(
+            "u.req.toml",
+            "name = \"U\"\nurl = \"http://h/{{$uuid}}\"\n[query]\nq = \"a b\"\n",
+        )];
+        let s = AppState::new(Ok(collection(&files)), Context::default()).snapshot();
+
+        let preview = s.preview(id(1)).unwrap().unwrap();
+
+        assert_eq!(preview.url(), "http://h/‹uuid›?q=a%20b");
+        assert!(s.preview(id(9)).is_none(), "no such request");
+    }
+
+    #[test]
+    fn collection_issues_become_notices() {
+        let mut s = AppState::new(
+            Ok(collection(&[(".env", "bad line\n")])),
+            Context::default(),
+        );
+
+        assert_eq!(s.snapshot().notices().len(), 1, "the bad .env line");
+    }
+
     #[test]
     fn send_starts_and_the_net_event_finishes() {
-        let mut s = AppState::new(Ok(demo()));
+        let mut s = AppState::new(Ok(demo()), Context::default());
 
-        let effects = s.apply(Event::Send(id(1)), now());
+        let effects = s.apply(send(1), now());
         let sending = matches!(s.snapshot().status(id(1)), RequestStatus::Sending { .. });
         let response = Response::for_tests(200, b"ok", Duration::from_millis(5));
         s.apply(
@@ -308,18 +581,18 @@ mod tests {
 
     #[test]
     fn a_second_send_while_sending_does_nothing() {
-        let mut s = AppState::new(Ok(demo()));
-        s.apply(Event::Send(id(1)), now());
+        let mut s = AppState::new(Ok(demo()), Context::default());
+        s.apply(send(1), now());
 
-        let effects = s.apply(Event::Send(id(1)), now());
+        let effects = s.apply(send(1), now());
 
         assert!(effects.is_empty(), "no duplicate request");
     }
 
     #[test]
     fn cancel_while_sending_asks_the_net_and_cancelled_ends_it() {
-        let mut s = AppState::new(Ok(demo()));
-        s.apply(Event::Send(id(1)), now());
+        let mut s = AppState::new(Ok(demo()), Context::default());
+        s.apply(send(1), now());
 
         let effects = s.apply(Event::Cancel(id(1)), now());
         s.apply(Event::Net(NetEvent::Cancelled { id: id(1) }), now());
@@ -336,12 +609,15 @@ mod tests {
 
     #[test]
     fn an_invalid_url_fails_without_a_request() {
-        let mut s = AppState::new(Ok(collection(&[(
-            "a.req.toml",
-            "name = \"A\"\nurl = \"not a url\"\n",
-        )])));
+        let mut s = AppState::new(
+            Ok(collection(&[(
+                "a.req.toml",
+                "name = \"A\"\nurl = \"not a url\"\n",
+            )])),
+            Context::default(),
+        );
 
-        let effects = s.apply(Event::Send(id(1)), now());
+        let effects = s.apply(send(1), now());
         let snap = s.snapshot();
 
         assert!(effects.is_empty(), "nothing sent");
@@ -354,9 +630,12 @@ mod tests {
 
     #[test]
     fn an_invalid_entry_gives_a_notice_and_no_request() {
-        let mut s = AppState::new(Ok(collection(&[("bad.req.toml", "name = ")])));
+        let mut s = AppState::new(
+            Ok(collection(&[("bad.req.toml", "name = ")])),
+            Context::default(),
+        );
 
-        let effects = s.apply(Event::Send(id(1)), now());
+        let effects = s.apply(send(1), now());
         let snap = s.snapshot();
 
         assert!(effects.is_empty(), "nothing sent");
@@ -370,29 +649,12 @@ mod tests {
     }
 
     #[test]
-    fn a_template_sends_with_a_notice() {
-        let mut s = AppState::new(Ok(collection(&[(
-            "a.req.toml",
-            "name = \"A\"\nurl = \"http://h/{{id}}\"\n",
-        )])));
-
-        let effects = s.apply(Event::Send(id(1)), now());
-        let snap = s.snapshot();
-
-        assert_eq!(effects.len(), 1, "sent as is");
-        assert!(
-            snap.notices()
-                .iter()
-                .any(|n| n.text().contains("variables")),
-            "notice: {:?}",
-            snap.notices()
-        );
-    }
-
-    #[test]
     fn notices_are_delivered_once() {
-        let mut s = AppState::new(Ok(collection(&[("bad.req.toml", "name = ")])));
-        s.apply(Event::Send(id(1)), now());
+        let mut s = AppState::new(
+            Ok(collection(&[("bad.req.toml", "name = ")])),
+            Context::default(),
+        );
+        s.apply(send(1), now());
 
         let first = s.snapshot();
         let second = s.snapshot();
@@ -403,12 +665,12 @@ mod tests {
 
     #[test]
     fn generation_bumps_on_every_change_only() {
-        let mut s = AppState::new(Ok(demo()));
+        let mut s = AppState::new(Ok(demo()), Context::default());
         let g0 = s.snapshot().generation();
 
         s.apply(Event::Cancel(id(1)), now());
         let g1 = s.snapshot().generation();
-        s.apply(Event::Send(id(1)), now());
+        s.apply(send(1), now());
 
         assert_eq!(g0, g1, "cancelling an idle request changes nothing");
         assert!(s.snapshot().generation() > g1, "sending does");
@@ -416,7 +678,10 @@ mod tests {
 
     #[test]
     fn a_failed_load_has_no_collection() {
-        let mut s = AppState::new(Err(ModelError::not_a_collection(Path::new("/x"))));
+        let mut s = AppState::new(
+            Err(ModelError::not_a_collection(Path::new("/x"))),
+            Context::default(),
+        );
 
         let snap = s.snapshot();
 
@@ -424,9 +689,6 @@ mod tests {
             snap.collection().is_none() && snap.load_error().is_some(),
             "error kept"
         );
-        assert!(
-            s.apply(Event::Send(id(1)), now()).is_empty(),
-            "nothing to send"
-        );
+        assert!(s.apply(send(1), now()).is_empty(), "nothing to send");
     }
 }

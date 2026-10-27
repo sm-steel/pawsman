@@ -386,13 +386,9 @@ pub fn run(mut options: Options) -> Result<(), TuiError> {
     let snapshots = tx.clone();
     let reader = Reader::spawn(term.reader()?, tx).map_err(TuiError::terminal_io)?;
     let mut notices = Vec::new();
-    let engine = Engine::start(
-        options.take_dir(),
-        options.settings_ref(),
-        move |snapshot| {
-            let _ = snapshots.send(Msg::Snapshot(snapshot));
-        },
-    )
+    let engine = Engine::start(options.engine_setup(), move |snapshot| {
+        let _ = snapshots.send(Msg::Snapshot(snapshot));
+    })
     .inspect_err(|err| notices.push(Notice::from_error(err)))
     .ok();
     let backend = CrosstermBackend::new(BufWriter::with_capacity(1 << 16, term.writer()?));
@@ -546,12 +542,22 @@ mod tests {
                     b"format = 1\nname = \"Demo\"\n".to_vec(),
                 )))
                 .collect();
-            AppState::new(Collection::from_files(Path::new("/demo"), files))
+            AppState::new(
+                Collection::from_files(Path::new("/demo"), files),
+                pawsman_core::resolve::Context::default(),
+            )
         }
 
         fn done(state: &mut AppState, n: u32, status: u16, body: &[u8]) {
             let id = RequestId::new(n);
-            state.apply(Event::Send(id), Instant::now());
+            state.apply(
+                Event::Send {
+                    id: id,
+                    at: std::time::UNIX_EPOCH,
+                    seed: 1,
+                },
+                Instant::now(),
+            );
             let response = Response::for_tests(status, body, Duration::from_millis(123));
             state.apply(Event::Net(NetEvent::Done { id, response }), Instant::now());
         }
@@ -630,7 +636,14 @@ mod tests {
                 .unwrap();
             assert!(app.take_commands().is_empty(), "idle: nothing to cancel");
 
-            st.apply(Event::Send(RequestId::new(1)), Instant::now());
+            st.apply(
+                Event::Send {
+                    id: RequestId::new(1),
+                    at: std::time::UNIX_EPOCH,
+                    seed: 1,
+                },
+                Instant::now(),
+            );
             app.update(Msg::Snapshot(st.snapshot()), Duration::ZERO)
                 .unwrap();
             app.update(key(Chord::plain(KeyCode::Esc)), Duration::ZERO)
@@ -646,7 +659,14 @@ mod tests {
         #[test]
         fn a_request_in_flight_ticks_every_100ms() {
             let mut st = state(FILES);
-            st.apply(Event::Send(RequestId::new(1)), Instant::now());
+            st.apply(
+                Event::Send {
+                    id: RequestId::new(1),
+                    at: std::time::UNIX_EPOCH,
+                    seed: 1,
+                },
+                Instant::now(),
+            );
             let mut app = app_with(&mut st);
 
             let text = screen(&render(&mut app, 160, 40, Duration::ZERO));
@@ -688,9 +708,10 @@ mod tests {
 
         #[test]
         fn a_load_error_shows_on_home() {
-            let mut st = AppState::new(Err(pawsman_model::ModelError::not_a_collection(
-                Path::new("/x"),
-            )));
+            let mut st = AppState::new(
+                Err(pawsman_model::ModelError::not_a_collection(Path::new("/x"))),
+                pawsman_core::resolve::Context::default(),
+            );
             let mut app = app_with(&mut st);
 
             let text = screen(&render(&mut app, 100, 24, Duration::ZERO));
@@ -714,7 +735,14 @@ mod tests {
         fn snapshot_100x30_stacked_failed() {
             let mut st = state(FILES);
             let id = RequestId::new(1);
-            st.apply(Event::Send(id), Instant::now());
+            st.apply(
+                Event::Send {
+                    id: id,
+                    at: std::time::UNIX_EPOCH,
+                    seed: 1,
+                },
+                Instant::now(),
+            );
             let error = pawsman_net::NetError::connect(
                 "127.0.0.1:8787",
                 &std::io::Error::other("connection refused"),

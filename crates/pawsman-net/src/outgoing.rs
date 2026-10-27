@@ -81,6 +81,23 @@ impl Outgoing {
         &self.method
     }
 
+    /// The URL, for other crates' tests.
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn uri_for_tests(&self) -> String {
+        self.uri.to_string()
+    }
+
+    /// The first value of header `name`, for other crates' tests.
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn header_for_tests(&self, name: &str) -> Option<String> {
+        self.headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned)
+    }
+
     pub(crate) fn uri(&self) -> &Uri {
         &self.uri
     }
