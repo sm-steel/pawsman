@@ -5,6 +5,7 @@ pub mod codes;
 mod collection;
 mod error;
 mod request;
+pub mod template;
 
 pub use collection::{Collection, Entry, EntryKind};
 pub use error::ModelError;
