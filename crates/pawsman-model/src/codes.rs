@@ -8,9 +8,11 @@ pub const NOT_A_COLLECTION: ErrorCode = ErrorCode::new("model::not_a_collection"
 pub const INVALID_FILE: ErrorCode = ErrorCode::new("model::invalid_file");
 /// A `{{…}}` template does not parse.
 pub const BAD_TEMPLATE: ErrorCode = ErrorCode::new("model::bad_template");
+/// A collection uses a newer format than this build reads.
+pub const FORMAT_TOO_NEW: ErrorCode = ErrorCode::new("model::format_too_new");
 
 /// Every code, for the registry test.
-pub const ALL: &[ErrorCode] = &[NOT_A_COLLECTION, INVALID_FILE, BAD_TEMPLATE];
+pub const ALL: &[ErrorCode] = &[NOT_A_COLLECTION, INVALID_FILE, BAD_TEMPLATE, FORMAT_TOO_NEW];
 
 #[cfg(test)]
 mod tests {
