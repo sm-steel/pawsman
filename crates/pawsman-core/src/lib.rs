@@ -6,6 +6,7 @@ mod disk;
 pub mod engine;
 pub mod env;
 mod error;
+pub mod fuzzy;
 pub mod globals;
 pub mod keys;
 pub mod memory;
