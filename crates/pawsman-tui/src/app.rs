@@ -1778,6 +1778,28 @@ mod tests {
         }
 
         #[test]
+        fn the_selected_row_stays_in_view_in_a_long_tree() {
+            let names: Vec<(String, String)> = (0..40)
+                .map(|n| {
+                    (
+                        format!("r{n:02}.req.toml"),
+                        format!("name = \"Request {n:02}\"\nurl = \"u\"\n"),
+                    )
+                })
+                .collect();
+            let files: Vec<(&str, &str)> = names
+                .iter()
+                .map(|(p, t)| (p.as_str(), t.as_str()))
+                .collect();
+            let mut app = app_with(&mut state(&files));
+            keys(&mut app, &[KeyCode::Down; 39]);
+
+            let text = screen(&render(&mut app, 100, 20, Duration::ZERO));
+
+            assert!(text.contains("Request 39"), "last row shown:\n{text}");
+        }
+
+        #[test]
         fn snapshot_160x40_tree_collapsed() {
             let mut app = app_with(&mut state(TREE));
             keys(&mut app, &[KeyCode::Up, KeyCode::Left]);
