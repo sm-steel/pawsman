@@ -1,27 +1,33 @@
 //! The main loop and its state.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::io::BufWriter;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use pawsman_core::engine::Engine;
-use pawsman_core::keys::{self, Action, Context};
+use pawsman_core::fuzzy::Match;
+use pawsman_core::keys::{Action, Context, KeyCode, Keymap, Mods};
 use pawsman_core::notice::Notice;
 use pawsman_core::resolve::Preview;
 use pawsman_core::state::Snapshot;
+use pawsman_core::tree::{Direction, NodeRef, Op};
 use pawsman_model::RequestId;
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::{Frame, Terminal};
+use unicode_segmentation::UnicodeSegmentation as _;
 
 use crate::input::MouseKind;
 use crate::input::{Input, Reader};
+use crate::palette;
 use crate::term::{Caps, InTmux, Term, probe};
+use crate::tree::{self, Row};
 use crate::views::main::{self, Focus, MainView, TraceView};
 use crate::views::picker::{self, Item};
 use crate::views::splash::{self, Splash};
-use crate::views::{colors, help, home};
+use crate::views::{ask, colors, help, home, palette as palette_view, prompt};
 use crate::{Options, TuiError};
 
 /// Everything the main loop reacts to.
@@ -61,6 +67,10 @@ pub(crate) enum UiCommand {
     Cancel(RequestId),
     /// Resolve in this environment; `None` for none.
     SelectEnv(Option<String>),
+    /// Change the tree on disk.
+    Op(Op),
+    /// Read the collection from disk again.
+    Reload,
 }
 
 /// Whether the startup splash plays.
@@ -93,13 +103,49 @@ const SENDING_TICK: Duration = Duration::from_millis(100);
 /// Lines a page key scrolls.
 const PAGE: u16 = 10;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Overlay {
     None,
-    Help,
+    /// The help overlay, scrolled by this many rows.
+    Help(u16),
     /// The environment picker, its highlighted row.
     Picker(usize),
+    /// A name being typed.
+    Prompt(Prompt),
+    /// A yes or no question before an operation.
+    Ask(Ask),
+    /// The command palette: the query and the highlighted row.
+    Palette {
+        query: String,
+        at: usize,
+    },
 }
+
+/// A one-line text field in a box.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Prompt {
+    title: String,
+    text: String,
+    purpose: PromptFor,
+}
+
+/// What a prompt's text becomes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PromptFor {
+    NewRequest(PathBuf),
+    NewFolder(PathBuf),
+    Rename(NodeRef),
+}
+
+/// A question; yes runs `op`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Ask {
+    text: String,
+    op: Op,
+}
+
+/// The longest name a prompt takes, in characters.
+const PROMPT_MAX: usize = 200;
 
 /// The selected request's preview, for one snapshot generation.
 type PreviewCache = Option<(u64, RequestId, Option<Result<Preview, Notice>>)>;
@@ -113,12 +159,14 @@ pub(crate) struct App {
     /// The current notice and when it expires, set when it is first drawn.
     shown: Option<(Notice, Duration)>,
     snapshot: Option<Arc<Snapshot>>,
-    selected: Option<RequestId>,
+    selected: Option<NodeRef>,
+    collapsed: BTreeSet<PathBuf>,
     focus: Focus,
     scroll: u16,
     trace: TraceView,
     preview: PreviewCache,
     commands: Vec<UiCommand>,
+    keys: Keymap,
 }
 
 impl App {
@@ -135,12 +183,20 @@ impl App {
             shown: None,
             snapshot: None,
             selected: None,
+            collapsed: BTreeSet::new(),
             focus: Focus::Sidebar,
             scroll: 0,
             trace: TraceView::Hidden,
             preview: None,
             commands: Vec::new(),
+            keys: Keymap::default(),
         }
+    }
+
+    /// Uses `keys` instead of the default bindings.
+    pub(crate) fn with_keys(mut self, keys: Keymap) -> Self {
+        self.keys = keys;
+        self
     }
 
     /// The screen after the splash: the collection if one is open, else home.
@@ -166,58 +222,350 @@ impl App {
         if fresh_error && let Some(err) = snapshot.load_error() {
             self.notices.push_back(Notice::from_error(err));
         }
-        if self.selected.is_none() {
-            self.selected = snapshot
-                .collection()
-                .and_then(|c| c.entries().first())
-                .map(pawsman_model::Entry::id);
-        }
+        let old_at = self
+            .rows()
+            .iter()
+            .position(|r| Some(&r.node) == self.selected.as_ref());
         self.snapshot = Some(snapshot);
+        if let Some(node) = self.created() {
+            self.reveal(&node);
+            self.selected = Some(node);
+        }
+        let rows = self.rows();
+        let present = rows.iter().any(|r| Some(&r.node) == self.selected.as_ref());
+        if !present {
+            self.selected = match old_at {
+                Some(at) => rows.get(at.min(rows.len().saturating_sub(1))),
+                None => rows
+                    .iter()
+                    .find(|r| matches!(r.node, NodeRef::Request(_)))
+                    .or_else(|| rows.first()),
+            }
+            .map(|r| r.node.clone());
+        }
         if matches!(self.screen, Screen::Home) {
             self.screen = self.landing();
         }
     }
 
-    /// Moves the selection by `step` entries, clamped to the list.
-    fn select(&mut self, step: isize) {
-        let Some(entries) = self
-            .snapshot
-            .as_ref()
-            .and_then(|s| s.collection())
-            .map(pawsman_model::Collection::entries)
-        else {
+    /// The node a tree operation just created or renamed, from the snapshot.
+    fn created(&self) -> Option<NodeRef> {
+        let snapshot = self.snapshot.as_ref()?;
+        tree::node_at(snapshot.collection()?, snapshot.created()?)
+    }
+
+    /// Opens every folder above `node`.
+    fn reveal(&mut self, node: &NodeRef) {
+        let Some(collection) = self.snapshot.as_ref().and_then(|s| s.collection()) else {
             return;
         };
-        let current = entries
+        let parent = tree::parent(collection, node);
+        for dir in parent.ancestors() {
+            self.collapsed.remove(dir);
+        }
+    }
+
+    /// The visible sidebar rows.
+    fn rows(&self) -> Vec<Row> {
+        self.snapshot
+            .as_ref()
+            .and_then(|s| s.collection())
+            .map(|c| tree::rows(c, &self.collapsed))
+            .unwrap_or_default()
+    }
+
+    /// The selected request, when a request (not a folder) is selected.
+    fn selected_id(&self) -> Option<RequestId> {
+        match self.selected {
+            Some(NodeRef::Request(id)) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// Moves the selection by `step` rows, clamped to the list.
+    fn select(&mut self, step: isize) {
+        let rows = self.rows();
+        let current = rows
             .iter()
-            .position(|e| Some(e.id()) == self.selected)
+            .position(|r| Some(&r.node) == self.selected.as_ref())
             .unwrap_or(0);
         let next = current
             .saturating_add_signed(step)
-            .min(entries.len().saturating_sub(1));
-        self.selected = entries.get(next).map(pawsman_model::Entry::id);
+            .min(rows.len().saturating_sub(1));
+        if let Some(row) = rows.get(next) {
+            self.selected = Some(row.node.clone());
+        }
         self.scroll = 0;
+    }
+
+    /// Closes an open folder, else selects the parent folder.
+    fn collapse(&mut self) {
+        let Some(node) = self.selected.clone() else {
+            return;
+        };
+        if let NodeRef::Folder(path) = &node
+            && !self.collapsed.contains(path)
+        {
+            self.collapsed.insert(path.clone());
+            return;
+        }
+        let Some(collection) = self.snapshot.as_ref().and_then(|s| s.collection()) else {
+            return;
+        };
+        let parent = tree::parent(collection, &node);
+        if !parent.as_os_str().is_empty() {
+            self.selected = Some(NodeRef::Folder(parent));
+        }
+    }
+
+    /// Opens or closes the selected folder.
+    fn toggle(&mut self, open: Option<bool>) {
+        let Some(NodeRef::Folder(path)) = &self.selected else {
+            return;
+        };
+        let open = open.unwrap_or_else(|| self.collapsed.contains(path));
+        if open {
+            self.collapsed.remove(path);
+        } else {
+            self.collapsed.insert(path.clone());
+        }
+    }
+
+    /// The display name of a node and the folder new nodes go into.
+    fn describe(&self, node: &NodeRef) -> Option<(String, PathBuf)> {
+        let collection = self.snapshot.as_ref()?.collection()?;
+        match node {
+            NodeRef::Request(id) => {
+                let entry = collection.entry(*id)?;
+                let name = collection
+                    .request(*id)
+                    .map_or_else(|| entry.stem().to_owned(), |r| r.name().to_owned());
+                Some((name, entry.folder().to_owned()))
+            }
+            NodeRef::Folder(path) => {
+                let folder = tree::folder(collection, path)?;
+                Some((folder.name().to_owned(), path.clone()))
+            }
+        }
+    }
+
+    /// The folder a new node goes into: the selected folder, or the selected request's folder.
+    fn target_folder(&self) -> (String, PathBuf) {
+        let collection = self.snapshot.as_ref().and_then(|s| s.collection());
+        let path = self
+            .selected
+            .as_ref()
+            .and_then(|n| self.describe(n))
+            .map(|(_, p)| p)
+            .unwrap_or_default();
+        let name = collection
+            .and_then(|c| tree::folder(c, &path))
+            .map(|f| f.name().to_owned())
+            .unwrap_or_default();
+        (name, path)
+    }
+
+    fn tree_action(&mut self, action: Action) {
+        let node = self.selected.clone();
+        match action {
+            Action::NewRequest | Action::NewFolder => {
+                let (name, parent) = self.target_folder();
+                let (title, purpose) = if action == Action::NewRequest {
+                    (
+                        format!("New request in {name}"),
+                        PromptFor::NewRequest(parent),
+                    )
+                } else {
+                    (
+                        format!("New folder in {name}"),
+                        PromptFor::NewFolder(parent),
+                    )
+                };
+                self.overlay = Overlay::Prompt(Prompt {
+                    title,
+                    text: String::new(),
+                    purpose,
+                });
+            }
+            Action::Rename => {
+                let Some(node) = node else {
+                    return;
+                };
+                let Some((name, _)) = self.describe(&node) else {
+                    return;
+                };
+                self.overlay = Overlay::Prompt(Prompt {
+                    title: format!("Rename {name}"),
+                    text: name,
+                    purpose: PromptFor::Rename(node),
+                });
+            }
+            Action::Delete => {
+                let Some(node) = node else {
+                    return;
+                };
+                let Some((name, _)) = self.describe(&node) else {
+                    return;
+                };
+                let text = match &node {
+                    NodeRef::Request(_) => format!("Delete request {name}?"),
+                    NodeRef::Folder(path) => {
+                        let n = self
+                            .snapshot
+                            .as_ref()
+                            .and_then(|s| s.collection())
+                            .and_then(|c| tree::folder(c, path))
+                            .map_or(0, tree::count);
+                        let noun = if n == 1 { "request" } else { "requests" };
+                        format!("Delete folder {name} and its {n} {noun}?")
+                    }
+                };
+                self.overlay = Overlay::Ask(Ask {
+                    text,
+                    op: Op::Delete(node),
+                });
+            }
+            Action::MoveUp | Action::MoveDown => {
+                let dir = if action == Action::MoveUp {
+                    Direction::Up
+                } else {
+                    Direction::Down
+                };
+                if let Some(node) = node {
+                    self.commands.push(UiCommand::Op(Op::Move { node, dir }));
+                }
+            }
+            Action::Reload => self.commands.push(UiCommand::Reload),
+            Action::Expand => self.toggle(Some(true)),
+            Action::Collapse => self.collapse(),
+            Action::Confirm => self.toggle(None),
+            _ => {}
+        }
+    }
+
+    fn prompt_action(&mut self, action: Action, prompt: Prompt) {
+        if action != Action::Confirm {
+            return;
+        }
+        let name = prompt.text.trim().to_owned();
+        if name.is_empty() {
+            return;
+        }
+        let op = match prompt.purpose {
+            PromptFor::NewRequest(parent) => Op::NewRequest { parent, name },
+            PromptFor::NewFolder(parent) => Op::NewFolder { parent, name },
+            PromptFor::Rename(node) => Op::Rename { node, name },
+        };
+        self.commands.push(UiCommand::Op(op));
+        self.overlay = Overlay::None;
+    }
+
+    /// Typing into the prompt or the palette query: characters, Backspace, paste. `false` when
+    /// no text field is open or `input` is not text.
+    fn type_into_prompt(&mut self, input: &Input) -> bool {
+        let (field, at) = match &mut self.overlay {
+            Overlay::Prompt(prompt) => (&mut prompt.text, None),
+            Overlay::Palette { query, at } => (query, Some(at)),
+            _ => return false,
+        };
+        let text = match input {
+            Input::Key(chord)
+                if (chord.mods().is_empty() || chord.mods() == Mods::SHIFT)
+                    && let KeyCode::Char(c) = chord.code() =>
+            {
+                c.to_string()
+            }
+            Input::Key(chord) if chord.mods().is_empty() && chord.code() == KeyCode::Backspace => {
+                if let Some((end, _)) = field.grapheme_indices(true).next_back() {
+                    field.truncate(end);
+                }
+                if let Some(at) = at {
+                    *at = 0;
+                }
+                return true;
+            }
+            Input::Paste(text) => text.chars().filter(|c| !c.is_control()).collect(),
+            _ => return false,
+        };
+        let room = PROMPT_MAX.saturating_sub(field.chars().count());
+        field.extend(text.chars().take(room));
+        // A new query ranks anew; the highlight goes back to the best match.
+        if let Some(at) = at {
+            *at = 0;
+        }
+        true
+    }
+
+    /// The notice for Ctrl-C with nothing selected.
+    fn copy_hint(&mut self) {
+        self.notices.push_back(Notice::info(format!(
+            "nothing selected · {} quits",
+            self.keys.label(Action::Quit).unwrap_or_default()
+        )));
+    }
+
+    /// The palette's items for `query`, best first.
+    fn palette_items(&self, query: &str) -> Vec<(palette::Item, Match)> {
+        let Some(snapshot) = &self.snapshot else {
+            return Vec::new();
+        };
+        palette::filter(palette::items(snapshot, &self.keys), query)
+    }
+
+    /// Up, Down and Enter in the palette; returns the action to run after it closes.
+    fn palette_action(&mut self, action: Action, query: &str, at: usize) -> Option<Action> {
+        let items = self.palette_items(query);
+        match action {
+            Action::Up | Action::Down => {
+                let next = if action == Action::Up {
+                    at.saturating_sub(1)
+                } else {
+                    (at + 1).min(items.len().saturating_sub(1))
+                };
+                self.overlay = Overlay::Palette {
+                    query: query.to_owned(),
+                    at: next,
+                };
+                None
+            }
+            Action::Confirm => {
+                let (item, _) = items.into_iter().nth(at)?;
+                self.overlay = Overlay::None;
+                match item {
+                    palette::Item::Request { id, .. } => {
+                        let node = NodeRef::Request(id);
+                        self.reveal(&node);
+                        self.selected = Some(node);
+                        self.focus = Focus::Sidebar;
+                        self.scroll = 0;
+                        None
+                    }
+                    palette::Item::Action { action, .. } => Some(action),
+                }
+            }
+            _ => None,
+        }
     }
 
     fn main_action(&mut self, action: Action) {
         match action {
             Action::Send => {
-                if let Some(id) = self.selected {
+                if let Some(id) = self.selected_id() {
                     self.commands.push(UiCommand::Send(id));
                 }
             }
             Action::Cancel => {
-                let sending = self
-                    .snapshot
-                    .as_ref()
-                    .zip(self.selected)
-                    .is_some_and(|(s, id)| {
-                        matches!(
-                            s.status(id),
-                            pawsman_core::state::RequestStatus::Sending { .. }
-                        )
-                    });
-                if sending && let Some(id) = self.selected {
+                let sending =
+                    self.snapshot
+                        .as_ref()
+                        .zip(self.selected_id())
+                        .is_some_and(|(s, id)| {
+                            matches!(
+                                s.status(id),
+                                pawsman_core::state::RequestStatus::Sending { .. }
+                            )
+                        });
+                if sending && let Some(id) = self.selected_id() {
                     self.commands.push(UiCommand::Cancel(id));
                 }
             }
@@ -243,7 +591,13 @@ impl App {
                 self.overlay = Overlay::Picker(at);
             }
             Action::Trace => self.trace = self.trace.toggled(),
-            _ => {}
+            Action::Palette => {
+                self.overlay = Overlay::Palette {
+                    query: String::new(),
+                    at: 0,
+                };
+            }
+            action => self.tree_action(action),
         }
     }
 
@@ -287,7 +641,7 @@ impl App {
 
     /// Recomputes the selected request's preview once per snapshot generation.
     fn refresh_preview(&mut self) {
-        let (Some(snapshot), Some(id)) = (self.snapshot.as_ref(), self.selected) else {
+        let (Some(snapshot), Some(id)) = (self.snapshot.as_ref(), self.selected_id()) else {
             return;
         };
         let generation = snapshot.generation();
@@ -305,17 +659,25 @@ impl App {
     }
 
     fn context(&self) -> Context {
-        match (&self.screen, self.overlay) {
+        match (&self.screen, &self.overlay) {
             (Screen::Splash(_), _) => Context::Splash,
-            (Screen::Home | Screen::Main, Overlay::Help) => Context::Help,
+            (Screen::Home | Screen::Main, Overlay::Help(_)) => Context::Help,
             (Screen::Main, Overlay::Picker(_)) => Context::Picker,
-            (Screen::Home, Overlay::None | Overlay::Picker(_)) => Context::Home,
+            (Screen::Main, Overlay::Prompt(_)) => Context::Prompt,
+            (Screen::Main, Overlay::Ask(_)) => Context::Ask,
+            (Screen::Main, Overlay::Palette { .. }) => Context::Palette,
+            (Screen::Home, _) => Context::Home,
             (Screen::Main, Overlay::None) => Context::Main,
         }
     }
 
     /// Applies one message.
     pub(crate) fn update(&mut self, msg: Msg, _now: Duration) -> Result<Flow, TuiError> {
+        if let Msg::Input(input) = &msg
+            && self.type_into_prompt(input)
+        {
+            return Ok(Flow::Continue);
+        }
         let chord = match msg {
             Msg::Terminate => return Ok(Flow::Quit),
             Msg::InputClosed => return Err(TuiError::input_closed()),
@@ -334,7 +696,7 @@ impl App {
             }
             Msg::Resize | Msg::Input(_) => return Ok(Flow::Continue),
         };
-        let action = keys::lookup(self.context(), chord);
+        let action = self.keys.lookup(self.context(), chord);
         if let Screen::Splash(splash) = &mut self.screen
             && action != Some(Action::Quit)
         {
@@ -343,15 +705,41 @@ impl App {
         }
         match action {
             Some(Action::Quit) => return Ok(Flow::Quit),
-            Some(Action::Help) => self.overlay = Overlay::Help,
+            Some(Action::Help) => self.overlay = Overlay::Help(0),
             Some(Action::Close) => self.overlay = Overlay::None,
+            Some(action) if let Overlay::Help(scroll) = self.overlay => {
+                let step: i32 = match action {
+                    Action::Up => -1,
+                    Action::Down => 1,
+                    Action::PageUp => -i32::from(PAGE),
+                    Action::PageDown => i32::from(PAGE),
+                    _ => 0,
+                };
+                let next = (i32::from(scroll) + step).max(0);
+                self.overlay = Overlay::Help(u16::try_from(next).unwrap_or(u16::MAX));
+            }
             Some(action) if let Overlay::Picker(at) = self.overlay => {
                 self.picker_action(action, at);
             }
-            Some(Action::Copy) => self.notices.push_back(Notice::info(format!(
-                "nothing selected · {} quits",
-                quit_label()
-            ))),
+            Some(action) if let Overlay::Prompt(prompt) = &self.overlay => {
+                self.prompt_action(action, prompt.clone());
+            }
+            Some(action) if let Overlay::Palette { query, at } = &self.overlay => {
+                let (query, at) = (query.clone(), *at);
+                match self.palette_action(action, &query, at) {
+                    Some(Action::Quit) => return Ok(Flow::Quit),
+                    Some(Action::Help) => self.overlay = Overlay::Help(0),
+                    Some(Action::Copy) => self.copy_hint(),
+                    Some(action) => self.main_action(action),
+                    None => {}
+                }
+            }
+            Some(Action::Confirm) if let Overlay::Ask(ask) = &self.overlay => {
+                self.commands.push(UiCommand::Op(ask.op.clone()));
+                self.overlay = Overlay::None;
+            }
+            Some(_) if matches!(self.overlay, Overlay::Ask(_)) => {}
+            Some(Action::Copy) => self.copy_hint(),
             Some(action) if matches!(self.screen, Screen::Main) => self.main_action(action),
             None if !chord.mods().is_empty() => tracing::debug!(%chord, "unbound key"),
             Some(_) | None => {}
@@ -378,27 +766,40 @@ impl App {
             let preview = self
                 .preview
                 .as_ref()
-                .filter(|(_, id, _)| Some(*id) == self.selected)
+                .filter(|(_, id, _)| Some(*id) == self.selected_id())
                 .and_then(|(_, _, p)| p.as_ref());
+            let rows = self.rows();
             if let Some(snapshot) = &self.snapshot {
                 let view = MainView {
                     snapshot,
-                    selected: self.selected,
+                    selected: self.selected_id(),
+                    node: self.selected.as_ref(),
+                    rows: &rows,
+                    collapsed: &self.collapsed,
                     focus: self.focus,
                     scroll: self.scroll,
                     now: Instant::now(),
                     notice: notice.as_ref(),
                     preview,
                     trace: self.trace,
+                    keys: &self.keys,
                 };
                 main::draw(frame, area, &view);
             }
         } else {
-            home::draw(frame, area, notice.as_ref(), &self.caps);
+            home::draw(frame, area, notice.as_ref(), &self.caps, &self.keys);
         }
-        match self.overlay {
-            Overlay::Help => help::draw(frame, area),
-            Overlay::Picker(at) => picker::draw(frame, area, &self.picker_items(), at),
+        match &self.overlay {
+            Overlay::Help(scroll) => {
+                self.overlay = Overlay::Help(help::draw(frame, area, &self.keys, *scroll));
+            }
+            Overlay::Picker(at) => picker::draw(frame, area, &self.picker_items(), *at),
+            Overlay::Prompt(p) => prompt::draw(frame, area, &p.title, &p.text),
+            Overlay::Ask(a) => ask::draw(frame, area, &a.text),
+            Overlay::Palette { query, at } => {
+                let items = self.palette_items(query);
+                palette_view::draw(frame, area, query, &items, *at);
+            }
             Overlay::None => {}
         }
         colors::downsample(frame.buffer_mut(), area, self.caps.color());
@@ -489,11 +890,12 @@ pub fn run(mut options: Options) -> Result<(), TuiError> {
     .ok();
     let backend = CrosstermBackend::new(BufWriter::with_capacity(1 << 16, term.writer()?));
     let splash = options.splash();
+    let keys = options.keys().clone();
     let result = Terminal::new(backend)
         .map_err(TuiError::terminal_io)
         .and_then(|mut terminal| {
             notices.extend(options.into_notices());
-            let mut app = App::new(splash, caps, notices);
+            let mut app = App::new(splash, caps, notices).with_keys(keys);
             event_loop(&mut terminal, &mut app, &rx, engine.as_ref())
         });
     if let Some(engine) = engine {
@@ -544,19 +946,12 @@ fn event_loop<B: Backend<Error = std::io::Error>>(
                 (Some(engine), UiCommand::Send(id)) => engine.send(id),
                 (Some(engine), UiCommand::Cancel(id)) => engine.cancel(id),
                 (Some(engine), UiCommand::SelectEnv(env)) => engine.select_env(env),
+                (Some(engine), UiCommand::Op(op)) => engine.apply(op),
+                (Some(engine), UiCommand::Reload) => engine.reload(),
                 (None, _) => {}
             }
         }
     }
-}
-
-/// The label of the first quit key, for hints.
-fn quit_label() -> String {
-    keys::table()
-        .iter()
-        .find(|b| b.action() == Action::Quit)
-        .and_then(|b| b.chords().first())
-        .map_or_else(|| "Ctrl-Q".to_owned(), ToString::to_string)
 }
 
 /// The splash's coalesce pattern changes from run to run.
@@ -611,6 +1006,7 @@ mod tests {
         use std::time::Instant;
 
         use pawsman_core::state::{AppState, Event};
+        use pawsman_core::tree::{Direction, NodeRef};
         use pawsman_model::Collection;
         use pawsman_net::{NetEvent, Response};
 
@@ -968,23 +1364,551 @@ mod tests {
             app_with(st)
         }
 
+        fn keys(app: &mut App, codes: &[KeyCode]) {
+            press(app, codes.iter().map(|c| key(Chord::plain(*c))));
+        }
+
+        fn typed(app: &mut App, text: &str) {
+            press(app, text.chars().map(char_key));
+        }
+
+        fn sends(app: &mut App) -> Vec<UiCommand> {
+            press(app, [key(Chord::plain(KeyCode::F(5)))]);
+            app.take_commands()
+        }
+
         #[test]
-        fn down_skips_folder_rows() {
+        fn down_visits_folder_rows() {
+            let mut app = app_with(&mut state(TREE));
+
+            keys(&mut app, &[KeyCode::Down]);
+            let on_folder = sends(&mut app);
+            keys(&mut app, &[KeyCode::Down]);
+            let on_two = sends(&mut app);
+
+            assert!(on_folder.is_empty(), "the `b` folder row: {on_folder:?}");
+            assert_eq!(
+                on_two,
+                vec![UiCommand::Send(RequestId::new(2))],
+                "then b/two"
+            );
+        }
+
+        #[test]
+        fn left_collapses_then_goes_to_the_parent() {
+            let mut app = app_with(&mut state(TREE));
+
+            keys(&mut app, &[KeyCode::Left]);
+            let on_folder = sends(&mut app);
+            keys(&mut app, &[KeyCode::Left]);
+            let text = screen(&render(&mut app, 160, 40, Duration::ZERO));
+            keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
+
+            assert!(on_folder.is_empty(), "on the `a` folder: {on_folder:?}");
+            assert!(!text.contains("One"), "collapsed:\n{text}");
+            assert_eq!(
+                sends(&mut app),
+                vec![UiCommand::Send(RequestId::new(2))],
+                "a (collapsed) → b → two"
+            );
+        }
+
+        #[test]
+        fn enter_toggles_a_folder() {
+            let mut app = app_with(&mut state(TREE));
+            keys(&mut app, &[KeyCode::Up, KeyCode::Enter]);
+            let closed = screen(&render(&mut app, 160, 40, Duration::ZERO));
+            keys(&mut app, &[KeyCode::Enter]);
+            let open = screen(&render(&mut app, 160, 40, Duration::ZERO));
+
+            assert!(!closed.contains("One"), "closed:\n{closed}");
+            assert!(open.contains("One"), "open:\n{open}");
+            assert!(app.take_commands().is_empty(), "no command");
+        }
+
+        #[test]
+        fn a_opens_a_prompt_and_enter_queues_new_request_in_the_folder() {
+            let mut app = app_with(&mut state(TREE));
+
+            press(&mut app, [char_key('a')]);
+            let text = screen(&render(&mut app, 160, 40, Duration::ZERO));
+            typed(&mut app, "Get x");
+            keys(&mut app, &[KeyCode::Enter]);
+
+            assert!(text.contains("New request in Alpha"), "title:\n{text}");
+            assert_eq!(
+                app.take_commands(),
+                vec![UiCommand::Op(Op::NewRequest {
+                    parent: "a".into(),
+                    name: "Get x".into()
+                })]
+            );
+        }
+
+        #[test]
+        fn shift_a_makes_a_folder_and_a_blank_name_does_nothing() {
+            let mut app = app_with(&mut state(TREE));
+
+            press(&mut app, [char_key('A')]);
+            typed(&mut app, "  ");
+            keys(&mut app, &[KeyCode::Enter, KeyCode::Esc]);
+            press(&mut app, [char_key('A')]);
+            typed(&mut app, "Sub");
+            keys(&mut app, &[KeyCode::Enter]);
+
+            assert_eq!(
+                app.take_commands(),
+                vec![UiCommand::Op(Op::NewFolder {
+                    parent: "a".into(),
+                    name: "Sub".into()
+                })]
+            );
+        }
+
+        #[test]
+        fn letters_type_in_the_prompt_even_when_bound() {
+            let mut app = app_with(&mut state_with(ENVS, &[]));
+
+            press(&mut app, [char_key('a')]);
+            typed(&mut app, "etjk");
+            let text = screen(&render(&mut app, 160, 40, Duration::ZERO));
+            keys(&mut app, &[KeyCode::Enter]);
+
+            assert!(!text.contains("Environment"), "no picker:\n{text}");
+            assert!(text.contains("etjk"), "typed:\n{text}");
+            assert_eq!(
+                app.take_commands(),
+                vec![UiCommand::Op(Op::NewRequest {
+                    parent: "".into(),
+                    name: "etjk".into()
+                })]
+            );
+        }
+
+        #[test]
+        fn a_paste_types_into_the_prompt_without_newlines() {
             let mut app = app_with(&mut state(TREE));
 
             press(
                 &mut app,
                 [
-                    key(Chord::plain(KeyCode::Down)),
-                    key(Chord::plain(KeyCode::F(5))),
+                    char_key('a'),
+                    Msg::Input(Input::Paste("Get\nuser\x1b".into())),
                 ],
             );
+            keys(&mut app, &[KeyCode::Enter]);
 
             assert_eq!(
                 app.take_commands(),
-                vec![UiCommand::Send(RequestId::new(2))],
-                "from a/one straight to b/two, past the `b` folder row"
+                vec![UiCommand::Op(Op::NewRequest {
+                    parent: "a".into(),
+                    name: "Getuser".into()
+                })]
             );
+        }
+
+        #[test]
+        fn ctrl_q_quits_from_the_prompt() {
+            let mut app = app_with(&mut state(TREE));
+            press(&mut app, [char_key('a')]);
+
+            let flow = app.update(key(Chord::ctrl('q')), Duration::ZERO).unwrap();
+
+            assert_eq!(flow, Flow::Quit, "quit");
+        }
+
+        #[test]
+        fn rename_prefills_the_name() {
+            let mut app = app_with(&mut state(TREE));
+
+            press(&mut app, [char_key('r')]);
+            let text = screen(&render(&mut app, 160, 40, Duration::ZERO));
+            keys(&mut app, &[KeyCode::Backspace; 3]);
+            typed(&mut app, "Uno");
+            keys(&mut app, &[KeyCode::Enter]);
+
+            assert!(text.contains("Rename One"), "title:\n{text}");
+            assert_eq!(
+                app.take_commands(),
+                vec![UiCommand::Op(Op::Rename {
+                    node: NodeRef::Request(RequestId::new(1)),
+                    name: "Uno".into()
+                })]
+            );
+        }
+
+        #[test]
+        fn delete_asks_and_y_confirms() {
+            let mut app = app_with(&mut state(TREE));
+
+            press(&mut app, [char_key('d')]);
+            let text = screen(&render(&mut app, 160, 40, Duration::ZERO));
+            press(&mut app, [char_key('y')]);
+
+            assert!(text.contains("Delete request One?"), "asked:\n{text}");
+            assert_eq!(
+                app.take_commands(),
+                vec![UiCommand::Op(Op::Delete(NodeRef::Request(RequestId::new(
+                    1
+                ))))]
+            );
+        }
+
+        #[test]
+        fn deleting_a_folder_names_its_requests() {
+            let mut app = app_with(&mut state(TREE));
+
+            keys(&mut app, &[KeyCode::Up]);
+            press(&mut app, [char_key('d')]);
+            let text = screen(&render(&mut app, 160, 40, Duration::ZERO));
+
+            assert!(
+                text.contains("Delete folder Alpha and its 1 request?"),
+                "{text}"
+            );
+        }
+
+        #[test]
+        fn esc_and_n_cancel_the_ask() {
+            let mut app = app_with(&mut state(TREE));
+
+            press(&mut app, [char_key('d'), key(Chord::plain(KeyCode::Esc))]);
+            press(&mut app, [char_key('d'), char_key('n')]);
+
+            assert!(app.take_commands().is_empty(), "nothing deleted");
+        }
+
+        #[test]
+        fn shift_k_and_j_move_and_ctrl_r_reloads() {
+            let mut app = app_with(&mut state(TREE));
+
+            press(
+                &mut app,
+                [char_key('K'), char_key('J'), key(Chord::ctrl('r'))],
+            );
+
+            let node = NodeRef::Request(RequestId::new(1));
+            assert_eq!(
+                app.take_commands(),
+                vec![
+                    UiCommand::Op(Op::Move {
+                        node: node.clone(),
+                        dir: Direction::Up
+                    }),
+                    UiCommand::Op(Op::Move {
+                        node,
+                        dir: Direction::Down
+                    }),
+                    UiCommand::Reload,
+                ]
+            );
+        }
+
+        #[test]
+        fn a_created_path_is_selected_and_its_folder_expanded() {
+            let mut st = state(TREE);
+            let mut app = app_with(&mut st);
+            keys(
+                &mut app,
+                &[KeyCode::Up, KeyCode::Left, KeyCode::Down, KeyCode::Down],
+            );
+
+            st.apply(Event::Created("a/one.req.toml".into()), Instant::now());
+            app.update(Msg::Snapshot(st.snapshot()), Duration::ZERO)
+                .unwrap();
+            let text = screen(&render(&mut app, 160, 40, Duration::ZERO));
+
+            assert!(text.contains("One"), "expanded:\n{text}");
+            assert_eq!(sends(&mut app), vec![UiCommand::Send(RequestId::new(1))]);
+        }
+
+        #[test]
+        fn the_selection_follows_its_id_across_a_reload() {
+            let mut ids = pawsman_model::Ids::default();
+            let build = |extra: &[(&str, &str)], ids: &mut pawsman_model::Ids| {
+                let files = TREE
+                    .iter()
+                    .chain(extra)
+                    .chain(&[("pawsman.toml", "format = 1\nname = \"Demo\"\n")])
+                    .map(|(n, t)| {
+                        pawsman_model::SourceFile::new(PathBuf::from(n), t.as_bytes().to_vec())
+                    })
+                    .collect();
+                Collection::build(Path::new("/demo"), files, ids)
+            };
+            let mut st = AppState::new(
+                build(&[], &mut ids),
+                pawsman_core::resolve::Context::default(),
+            );
+            let mut app = app_with(&mut st);
+            keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
+
+            st.apply(
+                Event::Reloaded(Box::new(build(
+                    &[("a/aaa.req.toml", "name = \"Aaa\"\nurl = \"u\"\n")],
+                    &mut ids,
+                ))),
+                Instant::now(),
+            );
+            app.update(Msg::Snapshot(st.snapshot()), Duration::ZERO)
+                .unwrap();
+
+            assert_eq!(
+                sends(&mut app),
+                vec![UiCommand::Send(RequestId::new(2))],
+                "still two"
+            );
+        }
+
+        #[test]
+        fn a_folder_shows_its_summary() {
+            let mut app = app_with(&mut state(TREE));
+            keys(&mut app, &[KeyCode::Up]);
+
+            let text = screen(&render(&mut app, 160, 40, Duration::ZERO));
+
+            assert!(
+                text.contains("folder Alpha") && text.contains("1 request"),
+                "{text}"
+            );
+        }
+
+        fn palette(app: &mut App, query: &str) {
+            press(app, [key(Chord::ctrl('k'))]);
+            typed(app, query);
+        }
+
+        #[test]
+        fn ctrl_k_opens_and_a_query_without_matches_says_so() {
+            let mut app = app_with(&mut state(TREE));
+
+            press(&mut app, [key(Chord::ctrl('k'))]);
+            let open = screen(&render(&mut app, 160, 40, Duration::ZERO));
+            typed(&mut app, "xyz");
+            let none = screen(&render(&mut app, 160, 40, Duration::ZERO));
+
+            assert!(open.contains("› ") && open.contains("Send"), "{open}");
+            assert!(none.contains("no match"), "{none}");
+        }
+
+        #[test]
+        fn j_and_k_type_in_the_palette() {
+            let mut app = app_with(&mut state(TREE));
+
+            palette(&mut app, "jk");
+            let text = screen(&render(&mut app, 160, 40, Duration::ZERO));
+
+            assert!(text.contains("› jk"), "{text}");
+        }
+
+        #[test]
+        fn enter_on_a_request_selects_it() {
+            let mut app = app_with(&mut state(TREE));
+
+            palette(&mut app, "top");
+            keys(&mut app, &[KeyCode::Enter]);
+
+            assert_eq!(sends(&mut app), vec![UiCommand::Send(RequestId::new(3))]);
+        }
+
+        #[test]
+        fn a_request_in_a_collapsed_folder_is_revealed() {
+            let mut app = app_with(&mut state(TREE));
+            keys(&mut app, &[KeyCode::Up, KeyCode::Left, KeyCode::Down]);
+
+            palette(&mut app, "one");
+            keys(&mut app, &[KeyCode::Enter]);
+            let text = screen(&render(&mut app, 160, 40, Duration::ZERO));
+
+            assert!(text.contains("One"), "expanded:\n{text}");
+            assert_eq!(sends(&mut app), vec![UiCommand::Send(RequestId::new(1))]);
+        }
+
+        #[test]
+        fn down_moves_the_highlight() {
+            let mut app = app_with(&mut state(TREE));
+
+            palette(&mut app, "o");
+            keys(
+                &mut app,
+                &[KeyCode::Down, KeyCode::Up, KeyCode::Down, KeyCode::Enter],
+            );
+
+            assert!(
+                matches!(app.overlay, Overlay::None),
+                "chosen: {:?}",
+                app.overlay
+            );
+        }
+
+        #[test]
+        fn enter_on_an_action_runs_it() {
+            let mut app = app_with(&mut state_with(ENVS, &[]));
+
+            palette(&mut app, "pick env");
+            keys(&mut app, &[KeyCode::Enter]);
+            let text = screen(&render(&mut app, 160, 40, Duration::ZERO));
+
+            assert!(text.contains("Environment"), "picker open:\n{text}");
+        }
+
+        #[test]
+        fn esc_closes_the_palette() {
+            let mut app = app_with(&mut state(TREE));
+
+            palette(&mut app, "o");
+            keys(&mut app, &[KeyCode::Esc]);
+            let text = screen(&render(&mut app, 160, 40, Duration::ZERO));
+
+            assert!(!text.contains("› o"), "{text}");
+            assert!(app.take_commands().is_empty(), "nothing run");
+        }
+
+        #[test]
+        fn snapshot_100x30_palette() {
+            let mut app = app_with(&mut state(TREE));
+            palette(&mut app, "o");
+
+            insta::assert_snapshot!(render(&mut app, 100, 30, Duration::ZERO).backend());
+        }
+
+        #[test]
+        fn tiny_palettes_never_panic() {
+            for (w, h) in [(0, 0), (1, 1), (5, 2), (30, 4), (44, 6)] {
+                let mut app = app_with(&mut state(TREE));
+                palette(&mut app, "o");
+                render(&mut app, w, h, Duration::ZERO);
+            }
+        }
+
+        #[test]
+        fn the_selected_row_stays_in_view_in_a_long_tree() {
+            let names: Vec<(String, String)> = (0..40)
+                .map(|n| {
+                    (
+                        format!("r{n:02}.req.toml"),
+                        format!("name = \"Request {n:02}\"\nurl = \"u\"\n"),
+                    )
+                })
+                .collect();
+            let files: Vec<(&str, &str)> = names
+                .iter()
+                .map(|(p, t)| (p.as_str(), t.as_str()))
+                .collect();
+            let mut app = app_with(&mut state(&files));
+            keys(&mut app, &[KeyCode::Down; 39]);
+
+            let text = screen(&render(&mut app, 100, 20, Duration::ZERO));
+
+            assert!(text.contains("Request 39"), "last row shown:\n{text}");
+        }
+
+        #[test]
+        fn a_vanished_selection_takes_the_row_at_its_place() {
+            let mut ids = pawsman_model::Ids::default();
+            let build = |files: &[(&str, &str)], ids: &mut pawsman_model::Ids| {
+                let files = files
+                    .iter()
+                    .chain(&[("pawsman.toml", "format = 1\nname = \"Demo\"\n")])
+                    .map(|(n, t)| {
+                        pawsman_model::SourceFile::new(PathBuf::from(n), t.as_bytes().to_vec())
+                    })
+                    .collect();
+                Collection::build(Path::new("/demo"), files, ids)
+            };
+            let mut st = AppState::new(
+                build(TREE, &mut ids),
+                pawsman_core::resolve::Context::default(),
+            );
+            let mut app = app_with(&mut st);
+            keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
+            let without_two: Vec<(&str, &str)> = TREE
+                .iter()
+                .copied()
+                .filter(|(p, _)| *p != "b/two.req.toml")
+                .collect();
+
+            st.apply(
+                Event::Reloaded(Box::new(build(&without_two, &mut ids))),
+                Instant::now(),
+            );
+            app.update(Msg::Snapshot(st.snapshot()), Duration::ZERO)
+                .unwrap();
+
+            assert_eq!(
+                sends(&mut app),
+                vec![UiCommand::Send(RequestId::new(3))],
+                "Top took Two's row"
+            );
+        }
+
+        #[test]
+        fn right_opens_a_closed_folder() {
+            let mut app = app_with(&mut state(TREE));
+            keys(&mut app, &[KeyCode::Up, KeyCode::Left, KeyCode::Right]);
+
+            let text = screen(&render(&mut app, 160, 40, Duration::ZERO));
+
+            assert!(text.contains("One"), "open again:\n{text}");
+        }
+
+        #[test]
+        fn up_and_down_move_the_palette_highlight() {
+            let mut st = state_with(ENVS, &[]);
+            for moves in [
+                &[KeyCode::Down, KeyCode::Down][..],
+                &[KeyCode::Down, KeyCode::Down, KeyCode::Down, KeyCode::Up][..],
+            ] {
+                let mut app = app_with(&mut st);
+                press(&mut app, [key(Chord::ctrl('k'))]);
+                keys(&mut app, moves);
+                keys(&mut app, &[KeyCode::Enter]);
+
+                let text = screen(&render(&mut app, 160, 40, Duration::ZERO));
+                assert!(
+                    text.contains("Environment"),
+                    "the third item, Pick environment ({moves:?}):\n{text}"
+                );
+            }
+        }
+
+        #[test]
+        fn other_keys_do_nothing_in_the_dialog() {
+            let mut app = app_with(&mut state(TREE));
+
+            press(&mut app, [char_key('d'), char_key('a'), char_key('e')]);
+            let text = screen(&render(&mut app, 160, 40, Duration::ZERO));
+
+            assert!(text.contains("Delete request One?"), "{text}");
+            assert!(
+                !text.contains("New request") && !text.contains("Environment"),
+                "{text}"
+            );
+        }
+
+        #[test]
+        fn snapshot_160x40_tree_collapsed() {
+            let mut app = app_with(&mut state(TREE));
+            keys(&mut app, &[KeyCode::Up, KeyCode::Left]);
+
+            insta::assert_snapshot!(render(&mut app, 160, 40, Duration::ZERO).backend());
+        }
+
+        #[test]
+        fn snapshot_80x24_prompt() {
+            let mut app = app_with(&mut state(TREE));
+            press(&mut app, [char_key('r')]);
+
+            insta::assert_snapshot!(render(&mut app, 80, 24, Duration::ZERO).backend());
+        }
+
+        #[test]
+        fn snapshot_80x24_ask() {
+            let mut app = app_with(&mut state(TREE));
+            keys(&mut app, &[KeyCode::Up]);
+            press(&mut app, [char_key('d')]);
+
+            insta::assert_snapshot!(render(&mut app, 80, 24, Duration::ZERO).backend());
         }
 
         #[test]
@@ -1176,15 +2100,49 @@ mod tests {
         app.update(key(Chord::plain(KeyCode::F(1))), Duration::ZERO)
             .unwrap();
         let open = screen(&render(&mut app, 80, 24, Duration::ZERO));
+        for _ in 0..3 {
+            app.update(key(Chord::plain(KeyCode::PageDown)), Duration::ZERO)
+                .unwrap();
+        }
+        let scrolled = screen(&render(&mut app, 80, 24, Duration::ZERO));
         app.update(key(Chord::plain(KeyCode::Esc)), Duration::ZERO)
             .unwrap();
         let closed = screen(&render(&mut app, 80, 24, Duration::ZERO));
 
+        assert!(open.contains("Ctrl-Q"), "quit on the first page:\n{open}");
         assert!(
-            open.contains("Ctrl-Q") && open.contains("copy the selection"),
-            "help lists the table:\n{open}"
+            scrolled.contains("copy the selection"),
+            "the rest of the table scrolls in:\n{scrolled}"
         );
         assert!(!closed.contains("copy the selection"), "closed:\n{closed}");
+    }
+
+    #[test]
+    fn help_scrolls_down_and_back_up() {
+        let mut app = App::new(SplashSetting::Off, caps(), vec![]);
+        app.update(key(Chord::plain(KeyCode::F(1))), Duration::ZERO)
+            .unwrap();
+
+        for _ in 0..3 {
+            app.update(key(Chord::plain(KeyCode::Down)), Duration::ZERO)
+                .unwrap();
+        }
+        let down = screen(&render(&mut app, 80, 24, Duration::ZERO));
+        for _ in 0..3 {
+            app.update(key(Chord::plain(KeyCode::Up)), Duration::ZERO)
+                .unwrap();
+        }
+        app.update(key(Chord::plain(KeyCode::PageDown)), Duration::ZERO)
+            .unwrap();
+        app.update(key(Chord::plain(KeyCode::PageUp)), Duration::ZERO)
+            .unwrap();
+        let back = screen(&render(&mut app, 80, 24, Duration::ZERO));
+
+        assert!(
+            !down.contains("Alt-Enter"),
+            "the first row scrolled away:\n{down}"
+        );
+        assert!(back.contains("Alt-Enter"), "back at the top:\n{back}");
     }
 
     #[test]

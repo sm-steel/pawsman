@@ -1,6 +1,6 @@
 //! The main view while no collection is open.
 
-use pawsman_core::keys::Context;
+use pawsman_core::keys::{Context, Keymap};
 use pawsman_core::notice::{Level, Notice};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
@@ -15,7 +15,13 @@ use crate::term::Caps;
 const DIM: Color = Color::Rgb(150, 150, 175);
 
 /// Draws the home view: wordmark, "no collection open", the notice and the hint bar.
-pub(crate) fn draw(frame: &mut Frame, area: Rect, notice: Option<&Notice>, caps: &Caps) {
+pub(crate) fn draw(
+    frame: &mut Frame,
+    area: Rect,
+    notice: Option<&Notice>,
+    caps: &Caps,
+    keys: &Keymap,
+) {
     let hint = caps.hint();
     frame.render_widget(Block::new().style(Style::new().bg(BG)), area);
     if area.width == 0 || area.height == 0 {
@@ -61,7 +67,7 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, notice: Option<&Notice>, caps:
         let row = Rect::new(area.x, area.bottom() - 2, area.width, 1);
         frame.render_widget(notice_line(notice), row);
     }
-    let mut bar = hints::line(Context::Home);
+    let mut bar = hints::line(keys, Context::Home);
     if let Some(hint) = hint {
         bar.push_span(Span::raw(" · "));
         bar.push_span(Span::styled(hint.text(), Style::new().fg(Color::Yellow)));

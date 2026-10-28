@@ -174,6 +174,81 @@ impl fmt::Display for Chord {
     }
 }
 
+impl std::str::FromStr for Chord {
+    type Err = String;
+
+    /// The inverse of `Display`, plus `Meta-`, `Hyper-`, and long key names such as `PageDown`.
+    /// Ctrl and Alt letters are lowercase; `Shift-a` is `A`.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let bad = || format!("`{s}` is not a key");
+        let mut mods = Mods::NONE;
+        let mut rest = s;
+        while let Some((head, tail)) = rest.split_once('-').filter(|(_, t)| !t.is_empty()) {
+            let bit = match head.to_ascii_lowercase().as_str() {
+                "ctrl" => Mods::CTRL,
+                "alt" => Mods::ALT,
+                "shift" => Mods::SHIFT,
+                "super" => Mods::SUPER,
+                "hyper" => Mods::HYPER,
+                "meta" => Mods::META,
+                _ => return Err(bad()),
+            };
+            mods = mods | bit;
+            rest = tail;
+        }
+        let code = match rest.to_ascii_lowercase().as_str() {
+            "space" => KeyCode::Char(' '),
+            "enter" => KeyCode::Enter,
+            "esc" | "escape" => KeyCode::Esc,
+            "tab" if mods.contains(Mods::SHIFT) => {
+                mods = Mods::from_bits(mods.0 & !Mods::SHIFT.0);
+                KeyCode::BackTab
+            }
+            "tab" => KeyCode::Tab,
+            "backtab" => KeyCode::BackTab,
+            "backspace" => KeyCode::Backspace,
+            "up" => KeyCode::Up,
+            "down" => KeyCode::Down,
+            "left" => KeyCode::Left,
+            "right" => KeyCode::Right,
+            "home" => KeyCode::Home,
+            "end" => KeyCode::End,
+            "pgup" | "pageup" => KeyCode::PageUp,
+            "pgdn" | "pagedown" => KeyCode::PageDown,
+            "ins" | "insert" => KeyCode::Insert,
+            "del" | "delete" => KeyCode::Delete,
+            lower => {
+                if let Some(n) = lower.strip_prefix('f').and_then(|n| n.parse::<u8>().ok()) {
+                    if !(1..=24).contains(&n) {
+                        return Err(bad());
+                    }
+                    KeyCode::F(n)
+                } else {
+                    let mut chars = rest.chars();
+                    let (Some(c), None) = (chars.next(), chars.next()) else {
+                        return Err(bad());
+                    };
+                    char_code(c, &mut mods)
+                }
+            }
+        };
+        Ok(Self { code, mods })
+    }
+}
+
+/// A character key as the decoder reports it: lowercase under Ctrl or Alt, Shift folded into
+/// the letter otherwise.
+fn char_code(c: char, mods: &mut Mods) -> KeyCode {
+    if mods.contains(Mods::CTRL) || mods.contains(Mods::ALT) {
+        return KeyCode::Char(c.to_lowercase().next().unwrap_or(c));
+    }
+    if *mods == Mods::SHIFT {
+        *mods = Mods::NONE;
+        return KeyCode::Char(c.to_uppercase().next().unwrap_or(c));
+    }
+    KeyCode::Char(c)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

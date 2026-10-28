@@ -1,11 +1,14 @@
 //! The collection view: sidebar, request pane and response pane, laid out by width.
 
+use std::collections::BTreeSet;
+use std::path::PathBuf;
 use std::time::Instant;
 
-use pawsman_core::keys::Context;
+use pawsman_core::keys::{Context, Keymap};
 use pawsman_core::notice::Notice;
 use pawsman_core::resolve::Preview;
 use pawsman_core::state::Snapshot;
+use pawsman_core::tree::NodeRef;
 use pawsman_model::RequestId;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -15,6 +18,7 @@ use ratatui::widgets::{Block, Paragraph};
 
 use super::splash::BG;
 use super::{hints, request, response, sidebar};
+use crate::tree::Row;
 
 /// The focused pane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,6 +74,12 @@ impl TraceView {
 pub(crate) struct MainView<'a> {
     pub(crate) snapshot: &'a Snapshot,
     pub(crate) selected: Option<RequestId>,
+    /// The selected sidebar node, a request or a folder.
+    pub(crate) node: Option<&'a NodeRef>,
+    /// The visible sidebar rows.
+    pub(crate) rows: &'a [Row],
+    /// The folders shown closed.
+    pub(crate) collapsed: &'a BTreeSet<PathBuf>,
     pub(crate) focus: Focus,
     pub(crate) scroll: u16,
     pub(crate) now: Instant,
@@ -78,6 +88,8 @@ pub(crate) struct MainView<'a> {
     pub(crate) preview: Option<&'a Result<Preview, Notice>>,
     /// Show the variable trace under the request.
     pub(crate) trace: TraceView,
+    /// The bindings, for the hint bar.
+    pub(crate) keys: &'a Keymap,
 }
 
 /// Sidebar width in the wide layouts.
@@ -103,7 +115,7 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, view: &MainView<'_>) {
         frame.render_widget(super::home::notice_line(n), notice);
     }
     frame.render_widget(
-        Paragraph::new(hints::fit(Context::Main, bar.width)).style(Style::new().fg(DIM)),
+        Paragraph::new(hints::fit(view.keys, Context::Main, bar.width)).style(Style::new().fg(DIM)),
         bar,
     );
     if body.width >= 160 {
@@ -141,7 +153,14 @@ fn panes(
 ) {
     if let Some(area) = side {
         let inner = framed(frame, area, " Requests ", Focus::Sidebar, view.focus);
-        sidebar::draw(frame, inner, view.snapshot, view.selected);
+        sidebar::draw(
+            frame,
+            inner,
+            view.snapshot,
+            view.rows,
+            view.node,
+            view.collapsed,
+        );
     }
     if let Some(area) = req {
         let inner = framed(frame, area, " Request ", Focus::Request, view.focus);

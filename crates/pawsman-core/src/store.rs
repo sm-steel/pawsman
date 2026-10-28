@@ -1,10 +1,16 @@
-//! Reading collections from disk. The model parses; this walks the directory and reads bytes.
+//! Collections on disk. The model parses; this walks the directory, caches the bytes, and writes
+//! files atomically.
 
-use std::path::{Path, PathBuf};
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write as _;
+use std::path::{Component, Path, PathBuf};
 use std::time::Instant;
 
-use pawsman_model::{Collection, ModelError, Node, SourceFile};
-use tracing::{info, warn};
+use pawsman_model::{Collection, Ids, ModelError, Node, SourceFile, edit};
+use tracing::{debug, info, warn};
+
+use crate::CoreError;
+use crate::tree::Change;
 
 /// Folders below this depth are not read.
 const MAX_DEPTH: usize = 16;
@@ -12,6 +18,8 @@ const MAX_DEPTH: usize = 16;
 const MAX_FILES: usize = 10_000;
 /// Directories never read, besides hidden ones.
 const SKIPPED: [&str; 2] = ["node_modules", "target"];
+/// Lines `init` puts in `.gitignore`.
+const IGNORED: [&str; 2] = [".env", ".pawsman/"];
 
 /// Loads the collection in `dir`: `pawsman.toml`, folders, requests, sidecars, environments and
 /// `.env`. Hidden directories, `node_modules` and `target` are skipped, symlinked directories are
@@ -24,57 +32,13 @@ const SKIPPED: [&str; 2] = ["node_modules", "target"];
 /// that cannot be read are logged and skipped.
 pub fn load(dir: &Path) -> Result<Collection, ModelError> {
     let started = Instant::now();
-    let root = dir.canonicalize().unwrap_or_else(|_| dir.to_owned());
-    let mut files = Vec::new();
-    let mut stack = vec![(PathBuf::new(), 0)];
-    let (mut too_deep, mut too_many) = (false, false);
-    while let Some((rel, depth)) = stack.pop() {
-        let Ok(read_dir) = std::fs::read_dir(dir.join(&rel)) else {
-            continue;
-        };
-        for entry in read_dir.flatten() {
-            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
-                continue;
-            };
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            let child = rel.join(&name);
-            if file_type.is_dir() {
-                if name.starts_with('.') || SKIPPED.contains(&name.as_str()) {
-                    continue;
-                }
-                if depth >= MAX_DEPTH {
-                    too_deep = true;
-                    continue;
-                }
-                stack.push((child, depth + 1));
-                continue;
-            }
-            let is_file = file_type.is_file()
-                || (file_type.is_symlink()
-                    && entry.path().is_file()
-                    && inside(&root, &entry.path()));
-            if !is_file || !wanted(&child, &name) {
-                continue;
-            }
-            if files.len() >= MAX_FILES {
-                too_many = true;
-                continue;
-            }
-            match std::fs::read(entry.path()) {
-                Ok(bytes) => files.push(SourceFile::new(child, bytes)),
-                Err(err) => warn!(path = %child.display(), %err, "collection file unreadable"),
-            }
-        }
-    }
-    if too_deep {
-        warn!(dir = %dir.display(), "collection deeper than 16 levels; rest skipped");
-    }
-    if too_many {
-        warn!(dir = %dir.display(), "collection has more than 10000 files; rest skipped");
-    }
-    let collection = Collection::from_files(dir, files)?;
+    let collection = Files::read(dir).collection(&mut Ids::default())?;
+    log_loaded(dir, &collection, started);
+    Ok(collection)
+}
+
+/// The log lines of a first load: each issue, then one summary.
+pub(crate) fn log_loaded(dir: &Path, collection: &Collection, started: Instant) {
     for issue in collection.issues() {
         warn!(%issue, "collection issue");
     }
@@ -87,7 +51,401 @@ pub fn load(dir: &Path) -> Result<Collection, ModelError> {
         ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
         "collection loaded"
     );
-    Ok(collection)
+}
+
+/// The bytes of every collection file, kept between reloads so a change can be compared.
+#[derive(Debug, Clone)]
+pub struct Files {
+    root: PathBuf,
+    /// `root` with symlinks resolved, for the symlinked-file check.
+    real: PathBuf,
+    bytes: BTreeMap<PathBuf, Vec<u8>>,
+    dirs: BTreeSet<PathBuf>,
+}
+
+/// What a refresh found.
+#[derive(Debug, Default)]
+#[non_exhaustive]
+pub struct Refresh {
+    /// Some file's bytes differ from before.
+    pub changed: bool,
+    /// Files that could not be read; their old bytes stay.
+    pub errors: Vec<CoreError>,
+}
+
+/// One walk's findings.
+#[derive(Default)]
+struct Walk {
+    files: BTreeMap<PathBuf, Vec<u8>>,
+    dirs: BTreeSet<PathBuf>,
+    errors: Vec<CoreError>,
+}
+
+impl Files {
+    /// Walks `dir` with the rules of [`load`].
+    #[must_use]
+    pub fn read(dir: &Path) -> Self {
+        let mut files = Self {
+            root: dir.to_owned(),
+            real: dir.canonicalize().unwrap_or_else(|_| dir.to_owned()),
+            bytes: BTreeMap::new(),
+            dirs: BTreeSet::new(),
+        };
+        let walk = files.walk(Path::new(""), 0);
+        for err in &walk.errors {
+            warn!(%err, "collection file unreadable");
+        }
+        files.bytes = walk.files;
+        files.dirs = walk.dirs;
+        files
+    }
+
+    /// The collection directory.
+    #[must_use]
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Every directory walked, relative; the root is the empty path.
+    #[must_use]
+    pub fn dirs(&self) -> &BTreeSet<PathBuf> {
+        &self.dirs
+    }
+
+    /// The bytes of file `rel`.
+    #[must_use]
+    pub fn get(&self, rel: &Path) -> Option<&[u8]> {
+        self.bytes.get(rel).map(Vec::as_slice)
+    }
+
+    /// Every file path, sorted.
+    pub fn paths(&self) -> impl Iterator<Item = &Path> {
+        self.bytes.keys().map(PathBuf::as_path)
+    }
+
+    /// Reads `rel` paths again: a directory is walked anew, a file is read, a missing path is
+    /// dropped with everything under it. Paths the walk would skip are ignored.
+    pub fn refresh(&mut self, rel: &[PathBuf]) -> Refresh {
+        let mut refresh = Refresh::default();
+        for path in rel {
+            if path.as_os_str().is_empty() || !relevant(path) || !confined(path) {
+                continue;
+            }
+            let full = self.root.join(path);
+            match std::fs::symlink_metadata(&full) {
+                Ok(meta) if meta.is_dir() => {
+                    let old_files: BTreeMap<_, _> = self
+                        .bytes
+                        .extract_if(.., |p, _| p.starts_with(path))
+                        .collect();
+                    self.dirs.retain(|d| !d.starts_with(path));
+                    let depth = path.components().count();
+                    let walk = self.walk(path, depth);
+                    refresh.changed |= walk.files != old_files;
+                    refresh.errors.extend(walk.errors);
+                    self.bytes.extend(walk.files);
+                    self.dirs.extend(walk.dirs);
+                }
+                Ok(_) => {
+                    if !self.readable_file(&full) || !wanted(path) {
+                        continue;
+                    }
+                    match std::fs::read(&full) {
+                        Ok(bytes) => {
+                            refresh.changed |= self.bytes.get(path) != Some(&bytes);
+                            self.bytes.insert(path.clone(), bytes);
+                        }
+                        Err(err) => refresh.errors.push(CoreError::read(path, &err)),
+                    }
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    let before = self.bytes.len();
+                    self.bytes.retain(|p, _| !p.starts_with(path));
+                    self.dirs.retain(|d| !d.starts_with(path));
+                    refresh.changed |= self.bytes.len() != before;
+                }
+                Err(err) => refresh.errors.push(CoreError::read(path, &err)),
+            }
+        }
+        refresh
+    }
+
+    /// Builds the collection, keeping request ids in `ids`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Collection::build`].
+    pub fn collection(&self, ids: &mut Ids) -> Result<Collection, ModelError> {
+        let files = self
+            .bytes
+            .iter()
+            .map(|(p, b)| SourceFile::new(p.clone(), b.clone()))
+            .collect();
+        Collection::build(&self.root, files, ids)
+    }
+
+    /// Files held in memory, for tests of pure code; directories come from the paths.
+    #[cfg(test)]
+    pub(crate) fn from_pairs(root: &Path, pairs: &[(&str, &str)]) -> Self {
+        let bytes: BTreeMap<PathBuf, Vec<u8>> = pairs
+            .iter()
+            .map(|(p, t)| (PathBuf::from(p), t.as_bytes().to_vec()))
+            .collect();
+        let dirs = bytes
+            .keys()
+            .flat_map(|p| p.ancestors().skip(1).map(Path::to_owned))
+            .collect();
+        Self {
+            root: root.to_owned(),
+            real: root.to_owned(),
+            bytes,
+            dirs,
+        }
+    }
+
+    /// Walks the directory `start` (relative, `depth` levels below the root), stopping at the
+    /// depth and file caps.
+    fn walk(&self, start: &Path, depth: usize) -> Walk {
+        let mut walk = Walk::default();
+        let mut stack = vec![(start.to_owned(), depth)];
+        let (mut too_deep, mut too_many) = (false, false);
+        let budget = MAX_FILES.saturating_sub(self.bytes.len());
+        while let Some((rel, depth)) = stack.pop() {
+            let Ok(read_dir) = std::fs::read_dir(self.root.join(&rel)) else {
+                continue;
+            };
+            walk.dirs.insert(rel.clone());
+            for entry in read_dir.flatten() {
+                let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                    continue;
+                };
+                let Ok(file_type) = entry.file_type() else {
+                    continue;
+                };
+                let child = rel.join(&name);
+                if !relevant(&child) {
+                    continue;
+                }
+                if file_type.is_dir() && depth >= MAX_DEPTH {
+                    too_deep = true;
+                    continue;
+                }
+                if file_type.is_dir() {
+                    stack.push((child, depth + 1));
+                    continue;
+                }
+                let is_file = file_type.is_file()
+                    || (file_type.is_symlink() && self.readable_file(&entry.path()));
+                if !is_file || !wanted(&child) {
+                    continue;
+                }
+                if walk.files.len() >= budget {
+                    too_many = true;
+                    continue;
+                }
+                match std::fs::read(entry.path()) {
+                    Ok(bytes) => {
+                        walk.files.insert(child, bytes);
+                    }
+                    Err(err) => walk.errors.push(CoreError::read(&child, &err)),
+                }
+            }
+        }
+        if too_deep {
+            warn!(dir = %self.root.display(), "collection deeper than 16 levels; rest skipped");
+        }
+        if too_many {
+            warn!(dir = %self.root.display(), "collection has more than 10000 files; rest skipped");
+        }
+        walk
+    }
+
+    /// A regular file, or a symlink to one inside the collection.
+    fn readable_file(&self, path: &Path) -> bool {
+        match std::fs::symlink_metadata(path) {
+            Ok(meta) if meta.file_type().is_symlink() => path.is_file() && inside(&self.real, path),
+            Ok(meta) => meta.is_file(),
+            Err(_) => false,
+        }
+    }
+}
+
+/// Whether `rel` can hold collection files: no hidden component (but the top-level `.env`), no
+/// `node_modules` or `target`.
+#[must_use]
+pub fn relevant(rel: &Path) -> bool {
+    if rel == Path::new(".env") {
+        return true;
+    }
+    rel.components().all(|c| match c {
+        Component::Normal(name) => name
+            .to_str()
+            .is_some_and(|n| !n.starts_with('.') && !SKIPPED.contains(&n)),
+        _ => false,
+    })
+}
+
+/// Relative, with no `..`, root or prefix: it stays under the collection.
+fn confined(rel: &Path) -> bool {
+    rel.components().all(|c| matches!(c, Component::Normal(_)))
+}
+
+/// Confined, and no directory on the way under `root` is a symlink, so a write cannot be
+/// redirected out of the collection.
+fn writable(root: &Path, rel: &Path) -> bool {
+    confined(rel)
+        && rel
+            .ancestors()
+            .skip(1)
+            .filter(|dir| !dir.as_os_str().is_empty())
+            .all(|dir| {
+                std::fs::symlink_metadata(root.join(dir))
+                    .map_or(true, |m| !m.file_type().is_symlink())
+            })
+}
+
+/// Writes `bytes` to `rel` under `root` atomically: a temp file in the same directory, synced, then
+/// renamed over the target. The target's permissions are kept; a new file gets `0644` on Unix.
+///
+/// # Errors
+///
+/// `core::write` when `rel` leaves the collection, or the directory or file cannot be written.
+pub fn write(root: &Path, rel: &Path, bytes: &[u8]) -> Result<(), CoreError> {
+    if !writable(root, rel) || rel.as_os_str().is_empty() {
+        return Err(CoreError::write(
+            rel,
+            &std::io::Error::other("the path leaves the collection"),
+        ));
+    }
+    let target = root.join(rel);
+    let fail = |err: std::io::Error| CoreError::write(rel, &err);
+    let parent = target.parent().unwrap_or(root);
+    std::fs::create_dir_all(parent).map_err(fail)?;
+    let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(fail)?;
+    temp.write_all(bytes).map_err(fail)?;
+    match std::fs::metadata(&target) {
+        Ok(meta) => temp.as_file().set_permissions(meta.permissions()),
+        Err(_) => set_new_file_mode(temp.as_file()),
+    }
+    .map_err(fail)?;
+    temp.as_file().sync_all().map_err(fail)?;
+    temp.persist(&target).map_err(|e| fail(e.error))?;
+    debug!(path = %rel.display(), bytes = bytes.len(), "written");
+    Ok(())
+}
+
+/// `0644` for a new file; the temp file starts as `0600`.
+#[cfg(unix)]
+fn set_new_file_mode(file: &std::fs::File) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    file.set_permissions(std::fs::Permissions::from_mode(0o644))
+}
+
+#[cfg(not(unix))]
+fn set_new_file_mode(_file: &std::fs::File) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// Runs `changes` in order under `root`; returns the directories `RemoveDirIfEmpty` had to keep.
+///
+/// # Errors
+///
+/// `core::exists` when a rename target exists; `core::write` when a change fails. Changes before
+/// the failing one stay done.
+pub fn apply(root: &Path, changes: &[Change]) -> Result<Vec<PathBuf>, CoreError> {
+    let mut kept = Vec::new();
+    for change in changes {
+        match change {
+            Change::Write { path, bytes } => write(root, path, bytes)?,
+            Change::Rename { from, to } => {
+                if !writable(root, from) || !writable(root, to) {
+                    return Err(CoreError::write(
+                        to,
+                        &std::io::Error::other("the path leaves the collection"),
+                    ));
+                }
+                let target = root.join(to);
+                if target.symlink_metadata().is_ok() {
+                    return Err(CoreError::exists(to));
+                }
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent).map_err(|e| CoreError::write(to, &e))?;
+                }
+                std::fs::rename(root.join(from), &target).map_err(|e| CoreError::write(to, &e))?;
+            }
+            Change::Remove(path) => {
+                if !writable(root, path) {
+                    continue;
+                }
+                match std::fs::remove_file(root.join(path)) {
+                    Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
+                        return Err(CoreError::write(path, &err));
+                    }
+                    _ => {}
+                }
+            }
+            Change::RemoveDirIfEmpty(path) => {
+                if !writable(root, path) || path.as_os_str().is_empty() {
+                    continue;
+                }
+                let full = root.join(path);
+                let empty = std::fs::read_dir(&full).is_ok_and(|mut d| d.next().is_none());
+                if empty {
+                    std::fs::remove_dir(&full).map_err(|e| CoreError::write(path, &e))?;
+                } else if full.is_dir() {
+                    kept.push(path.clone());
+                }
+            }
+        }
+    }
+    Ok(kept)
+}
+
+/// Creates a collection in `dir`: `pawsman.toml` named after the directory, and `.gitignore` lines
+/// for `.env` and `.pawsman/`.
+///
+/// # Errors
+///
+/// `core::exists` when `dir` already holds `pawsman.toml`; `core::write` when a file cannot be
+/// written.
+pub fn init(dir: &Path) -> Result<(), CoreError> {
+    let manifest = dir.join("pawsman.toml");
+    if manifest.exists() {
+        return Err(CoreError::exists(&manifest));
+    }
+    std::fs::create_dir_all(dir).map_err(|e| CoreError::write(dir, &e))?;
+    let name = dir
+        .canonicalize()
+        .ok()
+        .and_then(|d| d.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "collection".to_owned());
+    write(
+        dir,
+        Path::new("pawsman.toml"),
+        edit::new_manifest(&name).as_bytes(),
+    )?;
+    let ignore = dir.join(".gitignore");
+    let mut text = match std::fs::read_to_string(&ignore) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(err) => return Err(CoreError::write(&ignore, &err)),
+    };
+    let missing: Vec<&str> = IGNORED
+        .into_iter()
+        .filter(|line| !text.lines().any(|l| l.trim() == *line))
+        .collect();
+    if !missing.is_empty() {
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        for line in missing {
+            text.push_str(line);
+            text.push('\n');
+        }
+        write(dir, Path::new(".gitignore"), text.as_bytes())?;
+    }
+    info!(dir = %dir.display(), "collection created");
+    Ok(())
 }
 
 /// Whether `path`, symlinks followed, lies under `root`; a link out of the collection is not read.
@@ -96,7 +454,10 @@ fn inside(root: &Path, path: &Path) -> bool {
 }
 
 /// The files the model reads, by name and place.
-fn wanted(rel: &Path, name: &str) -> bool {
+fn wanted(rel: &Path) -> bool {
+    let Some(name) = rel.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
     let top = rel.parent() == Some(Path::new(""));
     let in_envs = rel.parent() == Some(Path::new("envs"));
     (top && (name == "pawsman.toml" || name == ".env"))
@@ -125,20 +486,20 @@ mod tests {
 
     use super::*;
 
-    fn write(dir: &Path, name: &str, text: &str) {
+    fn file(dir: &Path, name: &str, text: &str) {
         std::fs::write(dir.join(name), text).unwrap();
     }
 
     #[test]
     fn loads_requests_and_ignores_other_files() {
         let dir = tempfile::tempdir().unwrap();
-        write(dir.path(), "pawsman.toml", "format = 1\nname = \"D\"\n");
-        write(
+        file(dir.path(), "pawsman.toml", "format = 1\nname = \"D\"\n");
+        file(
             dir.path(),
             "a.req.toml",
             "name = \"A\"\nurl = \"http://h\"\n",
         );
-        write(dir.path(), "notes.md", "# not a request");
+        file(dir.path(), "notes.md", "# not a request");
         std::fs::create_dir(dir.path().join("sub")).unwrap();
 
         let c = load(dir.path()).unwrap();
@@ -276,7 +637,7 @@ mod tests {
     #[test]
     fn a_directory_without_a_manifest_is_not_a_collection() {
         let dir = tempfile::tempdir().unwrap();
-        write(
+        file(
             dir.path(),
             "a.req.toml",
             "name = \"A\"\nurl = \"http://h\"\n",
@@ -292,5 +653,509 @@ mod tests {
         let err = load(Path::new("/nonexistent/pawsman")).unwrap_err();
 
         assert_eq!(err.code(), pawsman_model::codes::NOT_A_COLLECTION, "code");
+    }
+
+    fn refreshed(files: &mut Files, rel: &str) -> Refresh {
+        files.refresh(&[PathBuf::from(rel)])
+    }
+
+    #[test]
+    fn refresh_reads_a_changed_file() {
+        let dir = tempfile::tempdir().unwrap();
+        put(dir.path(), "pawsman.toml", MANIFEST);
+        put(dir.path(), "a.req.toml", REQ);
+        let mut files = Files::read(dir.path());
+
+        put(dir.path(), "a.req.toml", "name = \"new\"\nurl = \"u\"\n");
+        let refresh = refreshed(&mut files, "a.req.toml");
+
+        assert!(refresh.changed && refresh.errors.is_empty(), "{refresh:?}");
+        assert_eq!(
+            files.get(Path::new("a.req.toml")),
+            Some(&b"name = \"new\"\nurl = \"u\"\n"[..]),
+            "new bytes"
+        );
+    }
+
+    #[test]
+    fn refresh_drops_a_removed_file() {
+        let dir = tempfile::tempdir().unwrap();
+        put(dir.path(), "pawsman.toml", MANIFEST);
+        put(dir.path(), "a.req.toml", REQ);
+        let mut files = Files::read(dir.path());
+        assert!(
+            files.get(Path::new("a.req.toml")).is_some(),
+            "read at first"
+        );
+
+        std::fs::remove_file(dir.path().join("a.req.toml")).unwrap();
+        let refresh = refreshed(&mut files, "a.req.toml");
+
+        assert!(refresh.changed, "changed");
+        assert!(files.get(Path::new("a.req.toml")).is_none(), "gone");
+    }
+
+    #[test]
+    fn refresh_walks_a_new_directory_and_drops_a_removed_one() {
+        let dir = tempfile::tempdir().unwrap();
+        put(dir.path(), "pawsman.toml", MANIFEST);
+        put(dir.path(), "old/x.req.toml", REQ);
+        let mut files = Files::read(dir.path());
+
+        put(dir.path(), "users/sub/a.req.toml", REQ);
+        std::fs::remove_dir_all(dir.path().join("old")).unwrap();
+        let refresh = files.refresh(&[PathBuf::from("users"), PathBuf::from("old")]);
+
+        assert!(refresh.changed, "changed");
+        assert_eq!(
+            files.paths().collect::<Vec<_>>(),
+            [Path::new("pawsman.toml"), Path::new("users/sub/a.req.toml")],
+            "walked and dropped"
+        );
+        assert!(
+            files.dirs().contains(Path::new("users/sub"))
+                && !files.dirs().contains(Path::new("old")),
+            "{:?}",
+            files.dirs()
+        );
+    }
+
+    #[test]
+    fn refresh_with_the_same_bytes_is_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        put(dir.path(), "pawsman.toml", MANIFEST);
+        put(dir.path(), "u/a.req.toml", REQ);
+        let mut files = Files::read(dir.path());
+
+        put(dir.path(), "u/a.req.toml", REQ);
+        let refresh = files.refresh(&[PathBuf::from("u/a.req.toml"), PathBuf::from("u")]);
+
+        assert!(!refresh.changed, "same bytes");
+    }
+
+    #[test]
+    fn files_read_lists_the_root_and_walked_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        put(dir.path(), "pawsman.toml", MANIFEST);
+        put(dir.path(), "users/a.req.toml", REQ);
+        put(dir.path(), ".git/HEAD", "ref");
+
+        let files = Files::read(dir.path());
+
+        assert_eq!(
+            files
+                .dirs()
+                .iter()
+                .map(PathBuf::as_path)
+                .collect::<Vec<_>>(),
+            [Path::new(""), Path::new("users")],
+            "no hidden dirs"
+        );
+    }
+
+    #[rstest::rstest]
+    #[case(".git/x.req.toml", false)]
+    #[case(".tmpAbC", false)]
+    #[case("a/.x.swp", false)]
+    #[case("node_modules/a.req.toml", false)]
+    #[case("a/target", false)]
+    #[case("a/.env", false)]
+    #[case(".env", true)]
+    #[case("users/a.req.toml", true)]
+    #[case("users", true)]
+    fn hidden_and_skipped_paths_are_not_relevant(#[case] rel: &str, #[case] expected: bool) {
+        assert_eq!(relevant(Path::new(rel)), expected, "{rel}");
+    }
+
+    #[cfg(unix)]
+    fn mode(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_replaces_atomically_and_keeps_permissions() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        put(dir.path(), "a.req.toml", "old");
+        std::fs::set_permissions(
+            dir.path().join("a.req.toml"),
+            std::fs::Permissions::from_mode(0o640),
+        )
+        .unwrap();
+
+        write(dir.path(), Path::new("a.req.toml"), b"new").unwrap();
+
+        assert_eq!(
+            std::fs::read(dir.path().join("a.req.toml")).unwrap(),
+            b"new",
+            "content"
+        );
+        assert_eq!(mode(&dir.path().join("a.req.toml")), 0o640, "mode kept");
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            1,
+            "no temp file left"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_creates_a_new_file_0644_and_its_folder() {
+        let dir = tempfile::tempdir().unwrap();
+
+        write(
+            dir.path(),
+            Path::new("users/_folder.toml"),
+            b"name = \"U\"\n",
+        )
+        .unwrap();
+
+        assert_eq!(mode(&dir.path().join("users/_folder.toml")), 0o644, "mode");
+    }
+
+    #[test]
+    fn write_refuses_paths_outside_the_collection() {
+        let dir = tempfile::tempdir().unwrap();
+
+        for rel in ["../x", "/tmp/x", "a/../../x"] {
+            let err = write(dir.path(), Path::new(rel), b"x").unwrap_err();
+            assert_eq!(err.code(), crate::codes::WRITE, "{rel}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_into_a_read_only_dir_is_core_write() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
+        if std::fs::write(dir.path().join("probe"), b"").is_ok() {
+            return; // root ignores permissions
+        }
+
+        let err = write(dir.path(), Path::new("a.req.toml"), b"x").unwrap_err();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        assert_eq!(err.code(), crate::codes::WRITE, "code");
+        assert!(err.to_string().contains("a.req.toml"), "{err}");
+    }
+
+    #[test]
+    fn apply_runs_changes_and_reports_kept_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        put(dir.path(), "users/a.req.toml", REQ);
+        put(dir.path(), "users/notes.md", "keep me");
+        put(dir.path(), "old/x.req.toml", REQ);
+        put(dir.path(), "b.req.toml", REQ);
+
+        let kept = apply(
+            dir.path(),
+            &[
+                Change::Rename {
+                    from: "old".into(),
+                    to: "new".into(),
+                },
+                Change::Write {
+                    path: "c.req.toml".into(),
+                    bytes: b"c".to_vec(),
+                },
+                Change::Remove("users/a.req.toml".into()),
+                Change::RemoveDirIfEmpty("users".into()),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(kept, [PathBuf::from("users")], "notes.md kept the folder");
+        assert!(dir.path().join("new/x.req.toml").exists(), "renamed");
+        assert_eq!(std::fs::read(dir.path().join("c.req.toml")).unwrap(), b"c");
+        assert!(!dir.path().join("users/a.req.toml").exists(), "removed");
+        assert!(
+            dir.path().join("users/notes.md").exists(),
+            "other file kept"
+        );
+    }
+
+    #[test]
+    fn apply_refuses_to_rename_onto_an_existing_path() {
+        let dir = tempfile::tempdir().unwrap();
+        put(dir.path(), "a.req.toml", "a");
+        put(dir.path(), "b.req.toml", "b");
+
+        let err = apply(
+            dir.path(),
+            &[Change::Rename {
+                from: "a.req.toml".into(),
+                to: "b.req.toml".into(),
+            }],
+        )
+        .unwrap_err();
+
+        assert_eq!(err.code(), crate::codes::EXISTS, "code");
+        assert_eq!(
+            std::fs::read(dir.path().join("b.req.toml")).unwrap(),
+            b"b",
+            "kept"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writes_never_follow_a_symlinked_directory_out_of_the_collection() {
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("_folder.toml"), "theirs").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("shared")).unwrap();
+
+        let write_err = write(dir.path(), Path::new("shared/_folder.toml"), b"ours").unwrap_err();
+        put(dir.path(), "a.req.toml", REQ);
+        let rename_err = apply(
+            dir.path(),
+            &[Change::Rename {
+                from: "a.req.toml".into(),
+                to: "shared/a.req.toml".into(),
+            }],
+        )
+        .unwrap_err();
+
+        assert_eq!(write_err.code(), crate::codes::WRITE, "write refused");
+        assert_eq!(rename_err.code(), crate::codes::WRITE, "rename refused");
+        assert_eq!(
+            std::fs::read_to_string(outside.path().join("_folder.toml")).unwrap(),
+            "theirs",
+            "the outside file is untouched"
+        );
+        assert!(
+            !outside.path().join("a.req.toml").exists(),
+            "nothing moved out"
+        );
+    }
+
+    #[test]
+    fn apply_removes_an_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        put(dir.path(), "users/a.req.toml", REQ);
+
+        apply(
+            dir.path(),
+            &[
+                Change::Remove("users/a.req.toml".into()),
+                Change::RemoveDirIfEmpty("users".into()),
+            ],
+        )
+        .unwrap();
+
+        assert!(!dir.path().join("users").exists(), "gone");
+    }
+
+    #[test]
+    fn init_writes_manifest_and_gitignore() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("my api");
+
+        init(&target).unwrap();
+
+        let c = load(&target).unwrap();
+        assert_eq!(c.name(), "my api", "named after the directory");
+        assert_eq!(
+            std::fs::read_to_string(target.join(".gitignore")).unwrap(),
+            ".env\n.pawsman/\n",
+            "gitignore"
+        );
+    }
+
+    #[test]
+    fn init_refuses_an_existing_collection() {
+        let dir = tempfile::tempdir().unwrap();
+        put(dir.path(), "pawsman.toml", MANIFEST);
+
+        let err = init(dir.path()).unwrap_err();
+
+        assert_eq!(err.code(), crate::codes::EXISTS, "code");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("pawsman.toml")).unwrap(),
+            MANIFEST,
+            "untouched"
+        );
+    }
+
+    #[test]
+    fn init_appends_to_an_existing_gitignore_once() {
+        let dir = tempfile::tempdir().unwrap();
+        put(dir.path(), ".gitignore", "target\n.env");
+
+        init(dir.path()).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(".gitignore")).unwrap(),
+            "target\n.env\n.pawsman/\n",
+            "only the missing line, after a newline"
+        );
+    }
+
+    #[test]
+    fn refresh_ignores_paths_the_walk_skips() {
+        let dir = tempfile::tempdir().unwrap();
+        put(dir.path(), "pawsman.toml", MANIFEST);
+        let mut files = Files::read(dir.path());
+        put(dir.path(), ".git/x.req.toml", REQ);
+        put(dir.path(), "notes.md", "x");
+        put(dir.path(), "node_modules/y.req.toml", REQ);
+
+        let refresh = files.refresh(&[
+            PathBuf::from(".git/x.req.toml"),
+            PathBuf::from("notes.md"),
+            PathBuf::from("node_modules"),
+            PathBuf::from("../x.req.toml"),
+            PathBuf::new(),
+        ]);
+
+        assert!(!refresh.changed && refresh.errors.is_empty(), "{refresh:?}");
+        assert_eq!(
+            files.paths().collect::<Vec<_>>(),
+            [Path::new("pawsman.toml")]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refresh_does_not_read_a_symlink_out_of_the_collection() {
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("k"), "PRIVATE").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        put(dir.path(), "pawsman.toml", MANIFEST);
+        let mut files = Files::read(dir.path());
+        std::os::unix::fs::symlink(outside.path().join("k"), dir.path().join("a.body.txt"))
+            .unwrap();
+        put(dir.path(), "b.req.toml", REQ);
+        std::os::unix::fs::symlink(dir.path().join("b.req.toml"), dir.path().join("c.req.toml"))
+            .unwrap();
+
+        files.refresh(&[PathBuf::from("a.body.txt"), PathBuf::from("c.req.toml")]);
+
+        assert!(
+            files.get(Path::new("a.body.txt")).is_none(),
+            "outside not read"
+        );
+        assert!(
+            files.get(Path::new("c.req.toml")).is_some(),
+            "inside link read"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_path_is_core_read_and_keeps_its_old_bytes() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        put(dir.path(), "pawsman.toml", MANIFEST);
+        put(dir.path(), "a.req.toml", REQ);
+        put(dir.path(), "users/b.req.toml", REQ);
+        let mut files = Files::read(dir.path());
+        std::fs::set_permissions(
+            dir.path().join("a.req.toml"),
+            std::fs::Permissions::from_mode(0o000),
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            dir.path().join("users"),
+            std::fs::Permissions::from_mode(0o000),
+        )
+        .unwrap();
+        if std::fs::read(dir.path().join("a.req.toml")).is_ok() {
+            return; // root reads anything
+        }
+
+        let refresh = files.refresh(&[
+            PathBuf::from("a.req.toml"),
+            PathBuf::from("users/b.req.toml"),
+        ]);
+        std::fs::set_permissions(
+            dir.path().join("users"),
+            std::fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+
+        assert_eq!(
+            refresh
+                .errors
+                .iter()
+                .map(pawsman_error::ErrorInfo::code)
+                .collect::<Vec<_>>(),
+            [crate::codes::READ, crate::codes::READ]
+        );
+        assert!(!refresh.changed, "nothing dropped");
+        assert!(files.get(Path::new("users/b.req.toml")).is_some(), "kept");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn apply_never_renames_or_removes_through_a_symlinked_directory() {
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("x.req.toml"), "theirs").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("shared")).unwrap();
+
+        let rename = apply(
+            dir.path(),
+            &[Change::Rename {
+                from: "shared/x.req.toml".into(),
+                to: "x.req.toml".into(),
+            }],
+        );
+        apply(
+            dir.path(),
+            &[
+                Change::Remove("shared/x.req.toml".into()),
+                Change::RemoveDirIfEmpty("shared".into()),
+            ],
+        )
+        .unwrap();
+
+        assert!(rename.is_err(), "rename refused");
+        assert!(outside.path().join("x.req.toml").exists(), "not removed");
+    }
+
+    #[test]
+    fn removing_a_missing_file_is_fine() {
+        let dir = tempfile::tempdir().unwrap();
+
+        assert!(apply(dir.path(), &[Change::Remove("gone.req.toml".into())]).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_remove_that_fails_is_core_write() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        put(dir.path(), "users/a.req.toml", REQ);
+        std::fs::set_permissions(
+            dir.path().join("users"),
+            std::fs::Permissions::from_mode(0o500),
+        )
+        .unwrap();
+        if std::fs::write(dir.path().join("users/probe"), b"").is_ok() {
+            return; // root ignores permissions
+        }
+
+        let err = apply(dir.path(), &[Change::Remove("users/a.req.toml".into())]).unwrap_err();
+        std::fs::set_permissions(
+            dir.path().join("users"),
+            std::fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+
+        assert_eq!(err.code(), crate::codes::WRITE);
+    }
+
+    #[test]
+    fn init_reports_a_gitignore_it_cannot_read() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".gitignore")).unwrap();
+
+        let err = init(dir.path()).unwrap_err();
+
+        assert_eq!(err.code(), crate::codes::WRITE);
     }
 }

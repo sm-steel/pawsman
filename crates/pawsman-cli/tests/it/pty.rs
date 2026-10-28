@@ -27,6 +27,7 @@ pub(crate) struct Spec {
     replies: Vec<u8>,
     stdout: Option<PathBuf>,
     settings: Option<String>,
+    keys: Option<String>,
 }
 
 impl Spec {
@@ -59,6 +60,12 @@ impl Spec {
         self.settings = Some(text.to_owned());
         self
     }
+
+    /// `keys.toml` in the session's config directory.
+    pub(crate) fn keys(mut self, text: &str) -> Self {
+        self.keys = Some(text.to_owned());
+        self
+    }
 }
 
 /// A running `pawsman` in a PTY.
@@ -72,10 +79,12 @@ pub(crate) struct Session {
 impl Session {
     pub(crate) fn spawn(spec: &Spec) -> Self {
         let home = tempfile::tempdir().unwrap();
-        if let Some(text) = &spec.settings {
-            let dir = home.path().join(".config/pawsman");
-            std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(dir.join("settings.toml"), text).unwrap();
+        let config = home.path().join(".config/pawsman");
+        for (file, text) in [("settings.toml", &spec.settings), ("keys.toml", &spec.keys)] {
+            if let Some(text) = text {
+                std::fs::create_dir_all(&config).unwrap();
+                std::fs::write(config.join(file), text).unwrap();
+            }
         }
         let (pty, pts) = pty_process::blocking::open().unwrap();
         pty.resize(Size::new(ROWS, COLS)).unwrap();

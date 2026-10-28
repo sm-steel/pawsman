@@ -2,6 +2,7 @@
 //! `apply` is a pure reducer that returns the effects to run; snapshots are what the UI draws.
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime};
 
@@ -46,6 +47,7 @@ pub struct Snapshot {
     context: Arc<Context>,
     statuses: BTreeMap<RequestId, RequestStatus>,
     notices: Vec<Notice>,
+    created: Option<PathBuf>,
     generation: u64,
 }
 
@@ -107,6 +109,12 @@ impl Snapshot {
     pub fn generation(&self) -> u64 {
         self.generation
     }
+
+    /// The path of a node a tree operation just created or renamed, delivered once.
+    #[must_use]
+    pub fn created(&self) -> Option<&Path> {
+        self.created.as_deref()
+    }
 }
 
 /// An input to the reducer.
@@ -128,6 +136,10 @@ pub enum Event {
     SelectEnv(Option<String>),
     /// The network reported something.
     Net(NetEvent),
+    /// The collection was read again from disk.
+    Reloaded(Box<Result<Collection, ModelError>>),
+    /// A tree operation created or renamed the node at this path.
+    Created(PathBuf),
 }
 
 /// Work the engine runs after a change.
@@ -146,9 +158,12 @@ pub struct AppState {
     collection: Option<Arc<Collection>>,
     load_error: Option<ModelError>,
     active_env: Option<String>,
+    /// The environment that broke on a reload, active again once it is fixed.
+    lost_env: Option<String>,
     context: Arc<Context>,
     statuses: BTreeMap<RequestId, RequestStatus>,
     notices: Vec<Notice>,
+    created: Option<PathBuf>,
     generation: u64,
 }
 
@@ -168,9 +183,11 @@ impl AppState {
             collection,
             load_error,
             active_env: None,
+            lost_env: None,
             context: Arc::new(context),
             statuses: BTreeMap::new(),
             notices,
+            created: None,
             generation: 0,
         }
     }
@@ -182,9 +199,11 @@ impl AppState {
             collection: None,
             load_error: None,
             active_env: None,
+            lost_env: None,
             context: Arc::new(Context::default()),
             statuses: BTreeMap::new(),
             notices: Vec::new(),
+            created: None,
             generation: 0,
         }
     }
@@ -193,6 +212,26 @@ impl AppState {
     #[must_use]
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// The environment requests resolve in.
+    #[must_use]
+    pub fn active_env(&self) -> Option<&str> {
+        self.active_env.as_deref()
+    }
+
+    /// The open collection.
+    pub(crate) fn collection(&self) -> Option<Arc<Collection>> {
+        self.collection.clone()
+    }
+
+    /// Whether the collection has environment `name` and it is not broken.
+    pub(crate) fn has_usable_env(&self, name: &str) -> bool {
+        self.collection.as_ref().is_some_and(|c| {
+            c.environments()
+                .iter()
+                .any(|e| e.name() == name && e.error().is_none())
+        })
     }
 
     /// Raises `notice` with the next snapshot.
@@ -215,6 +254,15 @@ impl AppState {
                 self.select_env(env);
                 Vec::new()
             }
+            Event::Reloaded(result) => {
+                self.reload(*result);
+                Vec::new()
+            }
+            Event::Created(path) => {
+                self.created = Some(path);
+                self.generation += 1;
+                Vec::new()
+            }
             Event::Net(event) => {
                 let (id, status) = match event {
                     NetEvent::Done { id, response } => {
@@ -228,6 +276,59 @@ impl AppState {
                 Vec::new()
             }
         }
+    }
+
+    fn reload(&mut self, result: Result<Collection, ModelError>) {
+        let collection = match result {
+            Ok(collection) => collection,
+            Err(err) if self.collection.is_some() => {
+                self.notice(Notice::from_error(&err));
+                return;
+            }
+            Err(err) => {
+                self.load_error = Some(err);
+                self.generation += 1;
+                return;
+            }
+        };
+        let old: Vec<String> = self
+            .collection
+            .as_ref()
+            .map(|c| c.issues().iter().map(ToString::to_string).collect())
+            .unwrap_or_default();
+        for issue in collection.issues() {
+            if !old.contains(&issue.to_string()) {
+                self.notices.push(Notice::from_error(issue));
+            }
+        }
+        self.statuses
+            .retain(|id, _| collection.entry(*id).is_some());
+        if let Some(name) = self.active_env.clone() {
+            let usable = collection
+                .environments()
+                .iter()
+                .any(|e| e.name() == name && e.error().is_none());
+            if !usable {
+                self.notices.push(Notice::warn(format!(
+                    "environment `{name}` is gone or broken; none is active until it is fixed"
+                )));
+                self.active_env = None;
+                self.lost_env = Some(name);
+            }
+        } else if let Some(name) = self.lost_env.clone()
+            && collection
+                .environments()
+                .iter()
+                .any(|e| e.name() == name && e.error().is_none())
+        {
+            self.notices
+                .push(Notice::info(format!("environment `{name}` is back")));
+            self.active_env = Some(name);
+            self.lost_env = None;
+        }
+        self.collection = Some(Arc::new(collection));
+        self.load_error = None;
+        self.generation += 1;
     }
 
     fn select_env(&mut self, env: Option<String>) {
@@ -254,6 +355,7 @@ impl AppState {
             "environment selected"
         );
         self.active_env = env;
+        self.lost_env = None;
         self.generation += 1;
     }
 
@@ -339,6 +441,7 @@ impl AppState {
             context: Arc::clone(&self.context),
             statuses: self.statuses.clone(),
             notices: std::mem::take(&mut self.notices),
+            created: self.created.take(),
             generation: self.generation,
         })
     }
@@ -346,7 +449,6 @@ impl AppState {
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
     use std::time::Duration;
 
     use pawsman_model::SourceFile;
@@ -577,6 +679,203 @@ mod tests {
             "m2 parts"
         );
         assert!(preview(1).trace().entries().is_empty(), "no variables");
+    }
+
+    fn done_for(s: &mut AppState, n: u32) {
+        s.apply(send(n), now());
+        let response = Response::for_tests(200, b"ok", Duration::from_millis(5));
+        s.apply(
+            Event::Net(NetEvent::Done {
+                id: id(n),
+                response,
+            }),
+            now(),
+        );
+    }
+
+    #[test]
+    fn reload_keeps_statuses_of_surviving_ids_and_drops_the_rest() {
+        let files = [
+            ("a.req.toml", "name = \"A\"\nurl = \"http://h/a\"\n"),
+            ("b.req.toml", "name = \"B\"\nurl = \"http://h/b\"\n"),
+        ];
+        let mut s = AppState::new(Ok(collection(&files)), Context::default());
+        done_for(&mut s, 1);
+        done_for(&mut s, 2);
+        let g = s.snapshot().generation();
+
+        s.apply(
+            Event::Reloaded(Box::new(Ok(collection(&files[..1])))),
+            now(),
+        );
+        let snap = s.snapshot();
+
+        assert!(snap.generation() > g, "a change");
+        assert!(
+            matches!(snap.status(id(1)), RequestStatus::Done(_)),
+            "a kept its response"
+        );
+        assert!(!s.statuses.contains_key(&id(2)), "b's status dropped");
+        assert_eq!(
+            snap.collection().unwrap().entries().len(),
+            1,
+            "new collection"
+        );
+    }
+
+    #[test]
+    fn reload_clears_an_env_that_broke() {
+        let mut s = AppState::new(Ok(collection(ENVS)), Context::default());
+        s.apply(Event::SelectEnv(Some("dev".into())), now());
+        s.snapshot();
+        let broken = [ENVS[0], ("envs/dev.env.toml", "vars = 1\n")];
+
+        s.apply(Event::Reloaded(Box::new(Ok(collection(&broken)))), now());
+        let snap = s.snapshot();
+
+        assert_eq!(snap.active_env(), None, "cleared");
+        assert!(
+            snap.notices().iter().any(|n| n.text().contains("dev")),
+            "{:?}",
+            snap.notices()
+        );
+    }
+
+    #[test]
+    fn an_env_that_broke_comes_back_when_it_is_fixed() {
+        let mut s = AppState::new(Ok(collection(ENVS)), Context::default());
+        s.apply(Event::SelectEnv(Some("dev".into())), now());
+        let broken = [ENVS[0], ("envs/dev.env.toml", "vars = 1\n")];
+
+        s.apply(Event::Reloaded(Box::new(Ok(collection(&broken)))), now());
+        s.apply(Event::Reloaded(Box::new(Ok(collection(ENVS)))), now());
+
+        assert_eq!(s.snapshot().active_env(), Some("dev"), "back");
+    }
+
+    #[test]
+    fn picking_another_env_forgets_the_broken_one() {
+        let mut s = AppState::new(Ok(collection(ENVS)), Context::default());
+        s.apply(Event::SelectEnv(Some("dev".into())), now());
+        let broken = [ENVS[0], ("envs/dev.env.toml", "vars = 1\n"), ENVS[2]];
+        s.apply(Event::Reloaded(Box::new(Ok(collection(&broken)))), now());
+
+        s.apply(Event::SelectEnv(Some("prod".into())), now());
+        s.apply(Event::Reloaded(Box::new(Ok(collection(ENVS)))), now());
+
+        assert_eq!(
+            s.snapshot().active_env(),
+            Some("prod"),
+            "the user's later pick wins"
+        );
+    }
+
+    #[test]
+    fn a_broken_env_stays_off_while_another_one_is_fine() {
+        let mut s = AppState::new(Ok(collection(ENVS)), Context::default());
+        s.apply(Event::SelectEnv(Some("dev".into())), now());
+        let broken = [ENVS[0], ("envs/dev.env.toml", "vars = 1\n"), ENVS[2]];
+
+        s.apply(Event::Reloaded(Box::new(Ok(collection(&broken)))), now());
+        s.apply(Event::Reloaded(Box::new(Ok(collection(&broken)))), now());
+
+        assert_eq!(s.snapshot().active_env(), None, "not prod in dev's place");
+    }
+
+    #[test]
+    fn usable_envs_exist_and_parse() {
+        let s = AppState::new(Ok(collection(ENVS)), Context::default());
+
+        assert!(s.has_usable_env("dev"), "dev");
+        assert!(!s.has_usable_env("broken"), "broken");
+        assert!(!s.has_usable_env("nope"), "unknown");
+    }
+
+    #[test]
+    fn a_failed_first_load_stays_an_error_and_changes_the_generation() {
+        let mut s = AppState::empty();
+        let g = s.generation();
+
+        s.apply(
+            Event::Reloaded(Box::new(Err(ModelError::not_a_collection(Path::new("/x"))))),
+            now(),
+        );
+
+        assert!(s.generation() > g, "a change");
+        assert!(s.snapshot().load_error().is_some(), "the error");
+    }
+
+    #[test]
+    fn created_changes_the_generation() {
+        let mut s = AppState::new(Ok(demo()), Context::default());
+        let g = s.generation();
+
+        s.apply(Event::Created("a.req.toml".into()), now());
+
+        assert!(s.generation() > g, "a change");
+    }
+
+    #[test]
+    fn reload_keeps_a_working_env() {
+        let mut s = AppState::new(Ok(collection(ENVS)), Context::default());
+        s.apply(Event::SelectEnv(Some("dev".into())), now());
+
+        s.apply(Event::Reloaded(Box::new(Ok(collection(ENVS)))), now());
+
+        assert_eq!(s.snapshot().active_env(), Some("dev"), "kept");
+    }
+
+    #[test]
+    fn a_failed_reload_keeps_the_collection_with_a_notice() {
+        let mut s = AppState::new(Ok(demo()), Context::default());
+        s.snapshot();
+
+        s.apply(
+            Event::Reloaded(Box::new(Err(ModelError::invalid_file(
+                Path::new("pawsman.toml"),
+                "expected `=`",
+            )))),
+            now(),
+        );
+        let snap = s.snapshot();
+
+        assert!(snap.collection().is_some(), "kept");
+        assert!(
+            snap.notices()
+                .iter()
+                .any(|n| n.text().starts_with("model::invalid_file")),
+            "{:?}",
+            snap.notices()
+        );
+    }
+
+    #[test]
+    fn new_issues_on_reload_become_notices_once() {
+        let mut s = AppState::new(Ok(demo()), Context::default());
+        s.snapshot();
+        let bad = [
+            ("a.req.toml", "name = \"A\"\nurl = \"http://h/a\"\n"),
+            (".env", "bad line\n"),
+        ];
+
+        s.apply(Event::Reloaded(Box::new(Ok(collection(&bad)))), now());
+        let first = s.snapshot().notices().len();
+        s.apply(Event::Reloaded(Box::new(Ok(collection(&bad)))), now());
+        let second = s.snapshot().notices().len();
+
+        assert_eq!((first, second), (1, 0), "only new issues");
+    }
+
+    #[test]
+    fn created_is_delivered_once() {
+        let mut s = AppState::new(Ok(demo()), Context::default());
+
+        s.apply(Event::Created("a.req.toml".into()), now());
+        let first = s.snapshot();
+        let second = s.snapshot();
+
+        assert_eq!(first.created(), Some(Path::new("a.req.toml")), "delivered");
+        assert_eq!(second.created(), None, "once");
     }
 
     #[test]

@@ -216,21 +216,36 @@ fn press(app: &mut App, keys: &[Chord]) {
     }
 }
 
+/// Selects the best palette match for `query`.
+fn goto(app: &mut App, query: &str) {
+    press(app, &[Chord::ctrl('k')]);
+    let typed: Vec<Chord> = query
+        .chars()
+        .map(|c| Chord::plain(KeyCode::Char(c)))
+        .collect();
+    press(app, &typed);
+    press(app, &[Chord::plain(KeyCode::Enter)]);
+}
+
+fn demo_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/demo")
+}
+
 #[test]
 #[ignore = "writes PNG files for the visual check"]
 fn visual_environments() {
-    use std::path::Path;
     use std::time::Instant;
 
     use pawsman_core::env::EnvSnapshot;
     use pawsman_core::resolve::Context;
     use pawsman_core::state::{AppState, Event};
-    use pawsman_model::RequestId;
 
     let mut r = png::Renderer::new();
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/demo");
     let env = EnvSnapshot::from_pairs([("PAWSMAN_SECRET_TOKEN", "s3cr3t")]);
-    let mut st = AppState::new(pawsman_core::store::load(&dir), Context::new(vec![], env));
+    let mut st = AppState::new(
+        pawsman_core::store::load(&demo_dir()),
+        Context::new(vec![], env),
+    );
     let e = Chord::plain(KeyCode::Char('e'));
     let t = Chord::plain(KeyCode::Char('t'));
     let down = Chord::plain(KeyCode::Down);
@@ -255,21 +270,29 @@ fn visual_environments() {
         &out("envs-80x24-trace-secret"),
     );
 
+    let template = st
+        .snapshot()
+        .collection()
+        .and_then(|c| c.entries().iter().find(|e| e.stem() == "template"))
+        .map(pawsman_model::Entry::id)
+        .unwrap();
     st.apply(
         Event::Send {
-            id: RequestId::new(7),
+            id: template,
             at: std::time::UNIX_EPOCH,
             seed: 1,
         },
         Instant::now(),
     );
-    let mut unresolved = main_app(&mut st, 6);
+    let mut unresolved = main_app(&mut st, 0);
+    goto(&mut unresolved, "unresolved");
     r.render(
         &app_frame(&mut unresolved, 160, 48),
         &out("envs-160x48-unresolved"),
     );
 
-    let mut sidecar = main_app(&mut st, 8);
+    let mut sidecar = main_app(&mut st, 0);
+    goto(&mut sidecar, "create");
     press(&mut sidecar, &[t]);
     r.render(
         &app_frame(&mut sidecar, 100, 30),
@@ -279,4 +302,74 @@ fn visual_environments() {
     let mut narrow = main_app(&mut st, 0);
     press(&mut narrow, &[down]);
     r.render(&app_frame(&mut narrow, 60, 20), &out("envs-60x20-sidebar"));
+}
+
+#[test]
+#[ignore = "writes PNG files for the visual check"]
+fn visual_tree_and_palette() {
+    use pawsman_core::resolve::Context;
+    use pawsman_core::state::AppState;
+
+    let mut r = png::Renderer::new();
+    let mut st = AppState::new(pawsman_core::store::load(&demo_dir()), Context::default());
+    let key = |c: char| Chord::plain(KeyCode::Char(c));
+    let up = Chord::plain(KeyCode::Up);
+    let left = Chord::plain(KeyCode::Left);
+
+    let mut tree = main_app(&mut st, 0);
+    goto(&mut tree, "users");
+    press(&mut tree, &[up, left]);
+    r.render(
+        &app_frame(&mut tree, 160, 48),
+        &out("tree-160x48-collapsed-folder"),
+    );
+
+    let mut prompt = main_app(&mut st, 0);
+    goto(&mut prompt, "list users");
+    press(&mut prompt, &[key('r')]);
+    r.render(
+        &app_frame(&mut prompt, 80, 24),
+        &out("tree-80x24-rename-prompt"),
+    );
+    press(&mut prompt, &[Chord::plain(KeyCode::Esc), key('a')]);
+    let typed: Vec<Chord> = "Ещё один запрос — 日本".chars().map(key).collect();
+    press(&mut prompt, &typed);
+    r.render(
+        &app_frame(&mut prompt, 80, 24),
+        &out("tree-80x24-new-wide-chars"),
+    );
+
+    let mut ask = main_app(&mut st, 0);
+    goto(&mut ask, "slow");
+    press(&mut ask, &[up, key('d')]);
+    r.render(
+        &app_frame(&mut ask, 80, 24),
+        &out("tree-80x24-delete-folder"),
+    );
+
+    for (w, h) in [(80, 24), (160, 48)] {
+        let mut palette = main_app(&mut st, 0);
+        press(&mut palette, &[Chord::ctrl('k')]);
+        press(&mut palette, &[key('u'), key('s')]);
+        r.render(
+            &app_frame(&mut palette, w, h),
+            &out(&format!("palette-{w}x{h}")),
+        );
+    }
+
+    let depth256 = caps(&[("TERM", "xterm-256color"), ("LANG", "C.UTF-8")]);
+    let mut indexed = App::new(SplashSetting::Off, depth256, vec![]);
+    indexed
+        .update(Msg::Snapshot(st.snapshot()), Duration::ZERO)
+        .unwrap();
+    press(&mut indexed, &[Chord::ctrl('k'), key('m'), key('e')]);
+    r.render(
+        &app_frame(&mut indexed, 100, 30),
+        &out("palette-100x30-256"),
+    );
+
+    let mut help = main_app(&mut st, 0);
+    press(&mut help, &[Chord::plain(KeyCode::F(1))]);
+    r.render(&app_frame(&mut help, 80, 24), &out("help-80x24-main"));
+    r.render(&app_frame(&mut help, 160, 48), &out("help-160x48-main"));
 }

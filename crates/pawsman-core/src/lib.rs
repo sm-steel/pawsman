@@ -2,17 +2,22 @@
 #![forbid(unsafe_code)]
 
 pub mod codes;
+mod disk;
 pub mod engine;
 pub mod env;
 mod error;
+pub mod fuzzy;
 pub mod globals;
 pub mod keys;
+pub mod memory;
 pub mod notice;
 pub mod paths;
 pub mod resolve;
 pub mod settings;
 pub mod state;
 pub mod store;
+pub mod tree;
+pub mod watch;
 pub mod wire;
 
 pub use error::CoreError;

@@ -1,18 +1,18 @@
 //! The hint bar, generated from the key table.
 
-use pawsman_core::keys::{Context, hints};
+use pawsman_core::keys::{Context, Keymap};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 /// `Ctrl-Q quit · F1 help` for `context`.
-pub(crate) fn line(context: Context) -> Line<'static> {
-    build(&hints(context))
+pub(crate) fn line(keys: &Keymap, context: Context) -> Line<'static> {
+    build(&keys.hints(context))
 }
 
 /// The hint bar for `context` in `width` cells: hints are dropped from the right until it fits,
 /// but quit and help always stay.
-pub(crate) fn fit(context: Context, width: u16) -> Line<'static> {
-    let mut kept = hints(context);
+pub(crate) fn fit(keys: &Keymap, context: Context, width: u16) -> Line<'static> {
+    let mut kept = keys.hints(context);
     loop {
         let bar = build(&kept);
         if bar.width() <= usize::from(width) {
@@ -37,8 +37,9 @@ fn keep_rank(hint: &str) -> Option<u8> {
         "quit" | "help" => None,
         "trace" => Some(0),
         "env" => Some(1),
-        "pane" => Some(2),
-        _ => Some(3),
+        "palette" => Some(2),
+        "pane" => Some(3),
+        _ => Some(4),
     }
 }
 
@@ -67,7 +68,7 @@ mod tests {
 
     #[test]
     fn a_narrow_bar_keeps_quit_and_help() {
-        let bar = fit(Context::Main, 60);
+        let bar = fit(&Keymap::default(), Context::Main, 60);
 
         assert!(bar.width() <= 60, "fits: {}", text(&bar));
         assert!(text(&bar).contains("Ctrl-Q quit"), "{}", text(&bar));
@@ -86,6 +87,11 @@ mod tests {
 
     #[test]
     fn a_wide_bar_has_every_hint() {
-        assert_eq!(text(&fit(Context::Main, 200)), text(&line(Context::Main)));
+        let keys = Keymap::default();
+
+        assert_eq!(
+            text(&fit(&keys, Context::Main, 200)),
+            text(&line(&keys, Context::Main))
+        );
     }
 }

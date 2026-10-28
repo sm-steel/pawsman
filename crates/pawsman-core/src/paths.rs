@@ -53,6 +53,12 @@ impl Paths {
         self.config.join("settings.toml")
     }
 
+    /// `keys.toml` in the config directory.
+    #[must_use]
+    pub fn keys_file(&self) -> PathBuf {
+        self.config.join("keys.toml")
+    }
+
     /// `globals.toml` in the config directory.
     #[must_use]
     pub fn globals_file(&self) -> PathBuf {
@@ -103,6 +109,11 @@ mod tests {
             paths.globals_file(),
             Path::new("/cfg/pawsman/globals.toml"),
             "globals file"
+        );
+        assert_eq!(
+            paths.keys_file(),
+            Path::new("/cfg/pawsman/keys.toml"),
+            "keys file"
         );
     }
 

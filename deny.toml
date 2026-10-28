@@ -46,6 +46,7 @@ deny = [
   { crate = "ratatui-core", wrappers = ["pawsman-tui", "ratatui", "ratatui-widgets", "ratatui-crossterm", "tachyonfx", "ratatui-image", "tui-big-text"], reason = "drawing only in pawsman-tui" },
   { crate = "ratatui-widgets", wrappers = ["pawsman-tui", "ratatui", "tui-big-text"], reason = "drawing only in pawsman-tui" },
   { crate = "crossterm", wrappers = ["pawsman-tui", "ratatui", "ratatui-crossterm"], reason = "terminal access only in pawsman-tui" },
+  { crate = "notify", wrappers = ["pawsman-core"], reason = "file watching only in the engine (store and watcher)" },
   { crate = "rhai", wrappers = ["pawsman-script"], reason = "scripting only through pawsman-script" },
   { crate = "tonic", wrappers = ["pawsman-grpc"], reason = "gRPC only in pawsman-grpc" },
   { crate = "openssl-sys", reason = "rustls only" },

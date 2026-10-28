@@ -31,6 +31,7 @@ hyper-util = { version = "=0.1.21", features = ["tokio"] }
 image = { version = "=0.25.10", default-features = false, features = ["png"] }
 insta = "=1.49.0"
 proptest = "=1.12.0"
+notify = "=8.2.1"
 pty-process = "=0.5.4"
 ratatui = { version = "=0.30.2", default-features = false, features = ["crossterm"] }
 rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12", "logging"] }
@@ -42,6 +43,7 @@ serde = { version = "=1.0.229", features = ["derive"] }
 signal-hook = { version = "=0.4.5", default-features = false }
 tachyonfx = { version = "=0.25.2", default-features = false, features = ["std"] }
 tempfile = "=3.27.0"
+toml_edit = { version = "=0.25.17", default-features = false, features = ["parse", "display"] }
 toml = { version = "=1.1.8", default-features = false, features = ["std", "parse", "serde", "display", "preserve_order"] }
 time = { version = "=0.3.55", default-features = false, features = ["std", "formatting"] }
 tokio = { version = "=1.54.1", features = ["rt-multi-thread", "net", "time", "sync", "macros", "io-util", "fs"] }

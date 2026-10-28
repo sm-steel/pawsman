@@ -149,6 +149,8 @@ Scope:
 
 End-to-end check: edit a request file in another terminal; the TUI shows the change within a second. Break its TOML; the node turns into an error with the message. Rename and reorder in the TUI; `git diff` shows only the expected lines.
 
+Resolved in the plan (each with a line in [DECISIONS](../../DECISIONS.md)): request ids stable by path; folders shown from `_folder.toml` alone; single-key edits through `toml_edit`; an own debounce instead of `notify-debouncer-full`; an own fuzzy matcher instead of `nucleo-matcher` (MPL-2.0); one non-recursive watch per walked directory; own writes ignored through the byte cache; folder delete keeps other files; the active environment remembered in `.pawsman/state.toml`; `keys.toml` all or nothing.
+
 ## 1.5 Editors, `$EDITOR` and timeline
 
 Scope:
@@ -209,7 +211,7 @@ Each enters with the piece that first needs it, pinned with `=` to the latest re
 | 1.1 | ratatui 0.30, crossterm 0.29 (`osc52`), tachyonfx 0.25 (`std` only), rustix (`event`, `fs`, `termios`), signal-hook, unicode-width, unicode-segmentation, clap (derive), tracing, tracing-subscriber (`env-filter`), tracing-appender, serde, toml; dev: insta, rstest, pty-process, vt100, fontdue and image (PNG files for the visual check) |
 | 1.2 | tokio, hyper 1, hyper-util, http, http-body-util, bytes, rustls (`ring`), tokio-rustls, rustls-platform-verifier, tokio-util, tempfile (async-compression waits for the viewer in 1.6) |
 | 1.3 | secrecy, uuid, time, fastrand; dev: proptest |
-| 1.4 | notify, notify-debouncer-full, nucleo-matcher |
+| 1.4 | notify, toml_edit (notify-debouncer-full and nucleo-matcher replaced by own code, see 1.4) |
 | 1.5 | tui-textarea (if compatible) |
 | 1.6 | serde_json, serde_json_path, quick-xml, image (png, jpeg, gif, webp), flate2, base64, ratatui-image (sixel only, no chafa) |
 | 1.7 | shell-words |

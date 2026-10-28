@@ -6,7 +6,9 @@ pub mod codes;
 mod error;
 pub mod input;
 mod options;
+mod palette;
 pub mod term;
+mod tree;
 mod views;
 #[cfg(test)]
 mod visual;

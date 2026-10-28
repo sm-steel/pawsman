@@ -2,9 +2,10 @@
 //! the trace of where each value came from.
 
 use pawsman_core::resolve::Preview;
+use pawsman_core::tree::NodeRef;
 use pawsman_error::ErrorInfo as _;
 use pawsman_model::trace::{Field, TraceValue};
-use pawsman_model::{EntryKind, Request};
+use pawsman_model::{EntryKind, Folder, Request};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -14,6 +15,7 @@ use ratatui::widgets::{Paragraph, Wrap};
 use super::main::{MainView, TraceView};
 use super::response::sanitize;
 use super::sidebar::method_color;
+use crate::tree;
 
 const DIM: Color = Color::Rgb(110, 110, 135);
 /// How a secret is drawn.
@@ -27,10 +29,19 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, view: &MainView<'_>) {
         .zip(view.selected)
         .and_then(|(c, id)| c.entry(id));
     let Some(entry) = entry else {
-        frame.render_widget(
-            Paragraph::new(Span::styled("no request selected", Style::new().fg(DIM))),
-            area,
+        let folder = view
+            .snapshot
+            .collection()
+            .zip(view.node)
+            .and_then(|(c, node)| match node {
+                NodeRef::Folder(path) => tree::folder(c, path),
+                NodeRef::Request(_) => None,
+            });
+        let lines = folder.map_or_else(
+            || vec![Line::styled("no request selected", Style::new().fg(DIM))],
+            folder_summary,
         );
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
         return;
     };
     let mut lines: Vec<Line<'_>> = Vec::new();
@@ -144,4 +155,46 @@ fn template(lines: &mut Vec<Line<'_>>, request: &Request) {
         lines.push(Line::default());
         lines.extend(sanitize(body).lines().map(|l| Line::raw(l.to_owned())));
     }
+}
+
+/// A folder: its name, path, how many requests it holds, and the defaults it gives them.
+fn folder_summary(folder: &Folder) -> Vec<Line<'static>> {
+    let n = tree::count(folder);
+    let noun = if n == 1 { "request" } else { "requests" };
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("folder ", Style::new().fg(DIM)),
+            Span::styled(
+                sanitize(folder.name()),
+                Style::new().add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::styled(
+            format!(
+                "{}/ · {n} {noun}",
+                sanitize(&folder.path().display().to_string())
+            ),
+            Style::new().fg(DIM),
+        ),
+    ];
+    if let Some(err) = folder.error() {
+        lines.push(Line::default());
+        lines.push(Line::styled(
+            sanitize(&format!("{}: {err}", err.code())),
+            Style::new().fg(Color::LightRed),
+        ));
+    }
+    for (title, pairs) in [("Headers", folder.headers()), ("Vars", folder.vars())] {
+        if pairs.is_empty() {
+            continue;
+        }
+        lines.push(Line::default());
+        lines.push(Line::styled(title, Style::new().fg(DIM)));
+        lines.extend(
+            pairs
+                .iter()
+                .map(|(k, v)| Line::raw(format!("{}: {}", sanitize(k), sanitize(v)))),
+        );
+    }
+    lines
 }
