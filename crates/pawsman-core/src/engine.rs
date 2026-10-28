@@ -15,6 +15,7 @@ use crate::notice::Notice;
 use crate::resolve::Context;
 use crate::settings::Settings;
 use crate::state::{AppState, Effect, Event, Snapshot};
+use crate::tree::Op;
 use crate::{globals, store};
 
 /// What the engine starts with.
@@ -116,6 +117,14 @@ impl Engine {
     pub fn select_env(&self, env: Option<String>) {
         let _ = self.tx.send(Msg::Event(Event::SelectEnv(env)));
     }
+
+    /// Runs a tree operation on the collection's files.
+    pub fn apply(&self, op: Op) {
+        let _ = op;
+    }
+
+    /// Reads the whole collection again.
+    pub fn reload(&self) {}
 
     /// Cancels request `id`.
     pub fn cancel(&self, id: RequestId) {

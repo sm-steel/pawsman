@@ -2,6 +2,7 @@
 //! `apply` is a pure reducer that returns the effects to run; snapshots are what the UI draws.
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime};
 
@@ -107,6 +108,12 @@ impl Snapshot {
     pub fn generation(&self) -> u64 {
         self.generation
     }
+
+    /// The path of a node a tree operation just created or renamed, delivered once.
+    #[must_use]
+    pub fn created(&self) -> Option<&Path> {
+        None
+    }
 }
 
 /// An input to the reducer.
@@ -128,6 +135,10 @@ pub enum Event {
     SelectEnv(Option<String>),
     /// The network reported something.
     Net(NetEvent),
+    /// The collection was read again from disk.
+    Reloaded(Result<Collection, ModelError>),
+    /// A tree operation created or renamed the node at this path.
+    Created(PathBuf),
 }
 
 /// Work the engine runs after a change.
@@ -215,6 +226,7 @@ impl AppState {
                 self.select_env(env);
                 Vec::new()
             }
+            Event::Reloaded(_) | Event::Created(_) => Vec::new(),
             Event::Net(event) => {
                 let (id, status) = match event {
                     NetEvent::Done { id, response } => {
@@ -346,7 +358,6 @@ impl AppState {
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
     use std::time::Duration;
 
     use pawsman_model::SourceFile;
@@ -577,6 +588,126 @@ mod tests {
             "m2 parts"
         );
         assert!(preview(1).trace().entries().is_empty(), "no variables");
+    }
+
+    fn done_for(s: &mut AppState, n: u32) {
+        s.apply(send(n), now());
+        let response = Response::for_tests(200, b"ok", Duration::from_millis(5));
+        s.apply(
+            Event::Net(NetEvent::Done {
+                id: id(n),
+                response,
+            }),
+            now(),
+        );
+    }
+
+    #[test]
+    fn reload_keeps_statuses_of_surviving_ids_and_drops_the_rest() {
+        let files = [
+            ("a.req.toml", "name = \"A\"\nurl = \"http://h/a\"\n"),
+            ("b.req.toml", "name = \"B\"\nurl = \"http://h/b\"\n"),
+        ];
+        let mut s = AppState::new(Ok(collection(&files)), Context::default());
+        done_for(&mut s, 1);
+        done_for(&mut s, 2);
+        let g = s.snapshot().generation();
+
+        s.apply(Event::Reloaded(Ok(collection(&files[..1]))), now());
+        let snap = s.snapshot();
+
+        assert!(snap.generation() > g, "a change");
+        assert!(
+            matches!(snap.status(id(1)), RequestStatus::Done(_)),
+            "a kept its response"
+        );
+        assert!(s.statuses.get(&id(2)).is_none(), "b's status dropped");
+        assert_eq!(
+            snap.collection().unwrap().entries().len(),
+            1,
+            "new collection"
+        );
+    }
+
+    #[test]
+    fn reload_clears_an_env_that_broke() {
+        let mut s = AppState::new(Ok(collection(ENVS)), Context::default());
+        s.apply(Event::SelectEnv(Some("dev".into())), now());
+        s.snapshot();
+        let broken = [ENVS[0], ("envs/dev.env.toml", "vars = 1\n")];
+
+        s.apply(Event::Reloaded(Ok(collection(&broken))), now());
+        let snap = s.snapshot();
+
+        assert_eq!(snap.active_env(), None, "cleared");
+        assert!(
+            snap.notices().iter().any(|n| n.text().contains("dev")),
+            "{:?}",
+            snap.notices()
+        );
+    }
+
+    #[test]
+    fn reload_keeps_a_working_env() {
+        let mut s = AppState::new(Ok(collection(ENVS)), Context::default());
+        s.apply(Event::SelectEnv(Some("dev".into())), now());
+
+        s.apply(Event::Reloaded(Ok(collection(ENVS))), now());
+
+        assert_eq!(s.snapshot().active_env(), Some("dev"), "kept");
+    }
+
+    #[test]
+    fn a_failed_reload_keeps_the_collection_with_a_notice() {
+        let mut s = AppState::new(Ok(demo()), Context::default());
+        s.snapshot();
+
+        s.apply(
+            Event::Reloaded(Err(ModelError::invalid_file(
+                Path::new("pawsman.toml"),
+                "expected `=`",
+            ))),
+            now(),
+        );
+        let snap = s.snapshot();
+
+        assert!(snap.collection().is_some(), "kept");
+        assert!(
+            snap.notices()
+                .iter()
+                .any(|n| n.text().starts_with("model::invalid_file")),
+            "{:?}",
+            snap.notices()
+        );
+    }
+
+    #[test]
+    fn new_issues_on_reload_become_notices_once() {
+        let mut s = AppState::new(Ok(demo()), Context::default());
+        s.snapshot();
+        let bad = [
+            ("a.req.toml", "name = \"A\"\nurl = \"http://h/a\"\n"),
+            (".env", "bad line\n"),
+        ];
+
+        s.apply(Event::Reloaded(Ok(collection(&bad))), now());
+        let first = s.snapshot().notices().len();
+        s.apply(Event::Reloaded(Ok(collection(&bad))), now());
+        let second = s.snapshot().notices().len();
+
+        assert_eq!((first, second), (1, 0), "only new issues");
+    }
+
+    #[test]
+    fn created_is_delivered_once() {
+        let mut s = AppState::new(Ok(demo()), Context::default());
+
+        s.apply(Event::Created("a.req.toml".into()), now());
+        let first = s.snapshot();
+        let second = s.snapshot();
+
+        assert_eq!(first.created(), Some(Path::new("a.req.toml")), "delivered");
+        assert_eq!(second.created(), None, "once");
     }
 
     #[test]

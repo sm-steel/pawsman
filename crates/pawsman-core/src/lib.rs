@@ -7,6 +7,7 @@ pub mod env;
 mod error;
 pub mod globals;
 pub mod keys;
+pub mod memory;
 pub mod notice;
 pub mod paths;
 pub mod resolve;
