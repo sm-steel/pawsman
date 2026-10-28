@@ -4,6 +4,7 @@
 pub mod codes;
 mod collection;
 pub mod dotenv;
+pub mod edit;
 mod environment;
 mod error;
 mod folder;
