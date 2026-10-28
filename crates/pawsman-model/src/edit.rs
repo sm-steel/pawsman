@@ -3,6 +3,8 @@
 
 use std::path::Path;
 
+use toml_edit::{DocumentMut, Item, Value};
+
 use crate::ModelError;
 
 /// Sets the top-level `name`; empty `text` gives a file holding only `name`.
@@ -11,8 +13,9 @@ use crate::ModelError;
 ///
 /// `model::invalid_file` when `text` is not TOML.
 pub fn set_name(text: &str, path: &Path, name: &str) -> Result<String, ModelError> {
-    let _ = (text, path, name);
-    Ok(String::new())
+    let mut doc = document(text, path)?;
+    set_value(&mut doc, "name", Value::from(name));
+    Ok(doc.to_string())
 }
 
 /// Sets `order` to `order` as one inline array, in place or after the other top-level keys.
@@ -21,8 +24,9 @@ pub fn set_name(text: &str, path: &Path, name: &str) -> Result<String, ModelErro
 ///
 /// `model::invalid_file` when `text` is not TOML.
 pub fn set_order(text: &str, path: &Path, order: &[String]) -> Result<String, ModelError> {
-    let _ = (text, path, order);
-    Ok(String::new())
+    let mut doc = document(text, path)?;
+    set_value(&mut doc, "order", Value::Array(order.iter().collect()));
+    Ok(doc.to_string())
 }
 
 /// Replaces `from` with `to` in `order`; `None` when `from` is not listed.
@@ -36,8 +40,11 @@ pub fn rename_in_order(
     from: &str,
     to: &str,
 ) -> Result<Option<String>, ModelError> {
-    let _ = (text, path, from, to);
-    Ok(None)
+    edit_order(text, path, from, |keys, at| {
+        if let Some(key) = keys.get_mut(at) {
+            to.clone_into(key);
+        }
+    })
 }
 
 /// Drops `key` from `order`; `None` when it is not listed.
@@ -46,37 +53,96 @@ pub fn rename_in_order(
 ///
 /// `model::invalid_file` when `text` is not TOML.
 pub fn remove_from_order(text: &str, path: &Path, key: &str) -> Result<Option<String>, ModelError> {
-    let _ = (text, path, key);
-    Ok(None)
+    edit_order(text, path, key, |keys, at| {
+        keys.remove(at);
+    })
 }
 
 /// A new GET request named `name`, with an empty URL.
 #[must_use]
 pub fn new_request(name: &str) -> String {
-    let _ = name;
-    String::new()
+    format!("name = {}\nmethod = \"GET\"\nurl = \"\"\n", quoted(name))
 }
 
 /// A new `_folder.toml` naming the folder.
 #[must_use]
 pub fn new_folder(name: &str) -> String {
-    let _ = name;
-    String::new()
+    format!("name = {}\n", quoted(name))
 }
 
 /// A new `pawsman.toml` for the current format.
 #[must_use]
 pub fn new_manifest(name: &str) -> String {
-    let _ = name;
-    String::new()
+    format!(
+        "format = {}\nname = {}\n",
+        crate::format::CURRENT,
+        quoted(name)
+    )
 }
 
 /// A file or directory name for `name`: lowercase, letters, digits, `_` and `-`, at most 64
 /// characters; empty when nothing is left.
 #[must_use]
 pub fn slug(name: &str) -> String {
-    let _ = name;
-    String::new()
+    const MAX: usize = 64;
+    let mut out = String::new();
+    for c in name.chars().flat_map(char::to_lowercase) {
+        let c = if c.is_alphanumeric() || c == '_' {
+            c
+        } else {
+            '-'
+        };
+        if c == '-' && (out.is_empty() || out.ends_with('-')) {
+            continue;
+        }
+        out.push(c);
+    }
+    let capped: String = out.chars().take(MAX).collect();
+    capped.trim_end_matches('-').to_owned()
+}
+
+fn document(text: &str, path: &Path) -> Result<DocumentMut, ModelError> {
+    text.parse::<DocumentMut>()
+        .map_err(|e| ModelError::invalid_file(path, e.message()))
+}
+
+/// Replaces the value of a top-level `key`, keeping the comments around it; adds the key otherwise.
+fn set_value(doc: &mut DocumentMut, key: &str, mut value: Value) {
+    if let Some(Item::Value(old)) = doc.get_mut(key) {
+        *value.decor_mut() = old.decor().clone();
+        *old = value;
+    } else {
+        value.decor_mut().set_prefix(" ");
+        doc.insert(key, Item::Value(value));
+    }
+}
+
+/// Runs `change` on the `order` keys when `key` is listed, and writes the array back.
+fn edit_order(
+    text: &str,
+    path: &Path,
+    key: &str,
+    change: impl FnOnce(&mut Vec<String>, usize),
+) -> Result<Option<String>, ModelError> {
+    let mut doc = document(text, path)?;
+    let Some(array) = doc.get("order").and_then(Item::as_array) else {
+        return Ok(None);
+    };
+    let mut keys: Vec<String> = array
+        .iter()
+        .filter_map(|v| v.as_str().map(str::to_owned))
+        .collect();
+    let Some(at) = keys.iter().position(|k| k == key) else {
+        return Ok(None);
+    };
+    change(&mut keys, at);
+    set_value(&mut doc, "order", Value::Array(keys.iter().collect()));
+    Ok(Some(doc.to_string()))
+}
+
+/// `value` as a TOML basic string.
+fn quoted(value: &str) -> String {
+    Value::from(value).to_string()
 }
 
 #[cfg(test)]
@@ -120,7 +186,7 @@ mod tests {
             changed(REQUEST, &after),
             [(
                 "name = \"Me\" # shown in the tree".to_owned(),
-                "name = \"Who am \\\"I\\\"\" # shown in the tree".to_owned()
+                "name = 'Who am \"I\"' # shown in the tree".to_owned()
             )],
             "{after}"
         );
