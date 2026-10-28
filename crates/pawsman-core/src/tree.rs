@@ -3,8 +3,9 @@
 
 use std::path::{Path, PathBuf};
 
-use pawsman_model::{Collection, Folder, Node, RequestId};
+use pawsman_model::{Collection, Folder, ModelError, Node, RequestId, edit};
 
+use crate::CoreError;
 use crate::notice::Notice;
 use crate::store::Files;
 
@@ -101,8 +102,292 @@ pub struct Plan {
 /// A notice for `core::exists` when a rename target is taken, or `model::invalid_file` when a
 /// file to change does not parse.
 pub fn plan(collection: &Collection, files: &Files, op: &Op) -> Result<Plan, Notice> {
-    let _ = (collection, files, op);
-    Ok(Plan::default())
+    let planner = Planner { collection, files };
+    match op {
+        Op::NewRequest { parent, name } => Ok(planner.new_request(parent, name)),
+        Op::NewFolder { parent, name } => Ok(planner.new_folder(parent, name)),
+        Op::Rename { node, name } => planner.rename(node, name),
+        Op::Delete(node) => planner.delete(node),
+        Op::Move { node, dir } => planner.move_node(node, *dir),
+    }
+}
+
+const FOLDER_FILE: &str = "_folder.toml";
+const REQUEST_EXT: &str = ".req.toml";
+/// Names the walk skips or the layout reserves, so a new node never gets them.
+const RESERVED_AT_ROOT: [&str; 1] = ["envs"];
+const RESERVED: [&str; 2] = ["node_modules", "target"];
+
+struct Planner<'a> {
+    collection: &'a Collection,
+    files: &'a Files,
+}
+
+/// Where a node sits: its parent folder and its key in the parent's `order`.
+struct Place {
+    parent: PathBuf,
+    key: String,
+}
+
+impl Planner<'_> {
+    fn new_request(&self, parent: &Path, name: &str) -> Plan {
+        if self.folder(parent).is_none() {
+            return Plan::default();
+        }
+        let key = self.free_key(parent, name, "request");
+        let path = parent.join(format!("{key}{REQUEST_EXT}"));
+        Plan {
+            changes: vec![Change::Write {
+                path: path.clone(),
+                bytes: edit::new_request(name).into_bytes(),
+            }],
+            select: Some(path),
+        }
+    }
+
+    fn new_folder(&self, parent: &Path, name: &str) -> Plan {
+        if self.folder(parent).is_none() {
+            return Plan::default();
+        }
+        let dir = parent.join(self.free_key(parent, name, "folder"));
+        Plan {
+            changes: vec![Change::Write {
+                path: dir.join(FOLDER_FILE),
+                bytes: edit::new_folder(name).into_bytes(),
+            }],
+            select: Some(dir),
+        }
+    }
+
+    fn rename(&self, node: &NodeRef, name: &str) -> Result<Plan, Notice> {
+        let Some(place) = self.place(node) else {
+            return Ok(Plan::default());
+        };
+        let wanted = match edit::slug(name) {
+            slug if slug.is_empty() => place.key.clone(),
+            slug => slug,
+        };
+        let mut changes = Vec::new();
+        let (old, new, named_file) = match node {
+            NodeRef::Request(_) => {
+                let old = place.parent.join(format!("{}{REQUEST_EXT}", place.key));
+                let new = place.parent.join(format!("{wanted}{REQUEST_EXT}"));
+                (old.clone(), new.clone(), (old, new))
+            }
+            NodeRef::Folder(dir) => {
+                let new = place.parent.join(&wanted);
+                (
+                    dir.clone(),
+                    new.clone(),
+                    (dir.join(FOLDER_FILE), new.join(FOLDER_FILE)),
+                )
+            }
+        };
+        if wanted != place.key {
+            if self.taken(&place.parent, &wanted) {
+                return Err(Notice::from_error(&CoreError::exists(&new)));
+            }
+            changes.push(Change::Rename {
+                from: old,
+                to: new.clone(),
+            });
+        }
+        let (text_at, write_at) = named_file;
+        let text = self.text(&text_at)?;
+        let renamed = edit::set_name(&text, &text_at, name).map_err(|e| Notice::from_error(&e))?;
+        changes.push(Change::Write {
+            path: write_at,
+            bytes: renamed.into_bytes(),
+        });
+        if wanted != place.key {
+            let order_at = place.parent.join(FOLDER_FILE);
+            let text = self.text(&order_at)?;
+            if let Some(order) = edit::rename_in_order(&text, &order_at, &place.key, &wanted)
+                .map_err(|e| Notice::from_error(&e))?
+            {
+                changes.push(Change::Write {
+                    path: order_at,
+                    bytes: order.into_bytes(),
+                });
+            }
+        }
+        Ok(Plan {
+            changes,
+            select: Some(new),
+        })
+    }
+
+    fn delete(&self, node: &NodeRef) -> Result<Plan, Notice> {
+        let Some(place) = self.place(node) else {
+            return Ok(Plan::default());
+        };
+        let mut changes = Vec::new();
+        match node {
+            NodeRef::Request(_) => {
+                changes.push(Change::Remove(
+                    place.parent.join(format!("{}{REQUEST_EXT}", place.key)),
+                ));
+                let sidecar = format!("{}.body.", place.key);
+                changes.extend(
+                    self.files
+                        .paths()
+                        .filter(|p| {
+                            p.parent() == Some(place.parent.as_path())
+                                && p.file_name()
+                                    .and_then(|n| n.to_str())
+                                    .is_some_and(|n| n.starts_with(&sidecar))
+                        })
+                        .map(|p| Change::Remove(p.to_owned())),
+                );
+            }
+            NodeRef::Folder(dir) => {
+                changes.extend(
+                    self.files
+                        .paths()
+                        .filter(|p| p.starts_with(dir))
+                        .map(|p| Change::Remove(p.to_owned())),
+                );
+                let mut dirs: Vec<&PathBuf> = self
+                    .files
+                    .dirs()
+                    .iter()
+                    .filter(|d| d.starts_with(dir))
+                    .collect();
+                dirs.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
+                changes.extend(
+                    dirs.into_iter()
+                        .map(|d| Change::RemoveDirIfEmpty(d.clone())),
+                );
+            }
+        }
+        let order_at = place.parent.join(FOLDER_FILE);
+        let text = self.text(&order_at)?;
+        if let Some(order) = edit::remove_from_order(&text, &order_at, &place.key)
+            .map_err(|e| Notice::from_error(&e))?
+        {
+            changes.push(Change::Write {
+                path: order_at,
+                bytes: order.into_bytes(),
+            });
+        }
+        Ok(Plan {
+            changes,
+            select: None,
+        })
+    }
+
+    fn move_node(&self, node: &NodeRef, dir: Direction) -> Result<Plan, Notice> {
+        let Some(place) = self.place(node) else {
+            return Ok(Plan::default());
+        };
+        let Some(parent) = self.folder(&place.parent) else {
+            return Ok(Plan::default());
+        };
+        let mut keys = self.keys(parent);
+        let Some(at) = keys.iter().position(|k| *k == place.key) else {
+            return Ok(Plan::default());
+        };
+        let other = match dir {
+            Direction::Up => at.checked_sub(1),
+            Direction::Down => Some(at + 1).filter(|i| *i < keys.len()),
+        };
+        let Some(other) = other else {
+            return Ok(Plan::default());
+        };
+        keys.swap(at, other);
+        let order_at = place.parent.join(FOLDER_FILE);
+        let text = self.text(&order_at)?;
+        let order = edit::set_order(&text, &order_at, &keys).map_err(|e| Notice::from_error(&e))?;
+        Ok(Plan {
+            changes: vec![Change::Write {
+                path: order_at,
+                bytes: order.into_bytes(),
+            }],
+            select: None,
+        })
+    }
+
+    /// The folder at `path`; the root is the empty path.
+    fn folder(&self, path: &Path) -> Option<&Folder> {
+        let mut current = self.collection.root_folder();
+        for part in path.components() {
+            let prefix = current.path().join(part);
+            current = current.children().iter().find_map(|n| match n {
+                Node::Folder(f) if f.path() == prefix => Some(&**f),
+                _ => None,
+            })?;
+        }
+        Some(current)
+    }
+
+    /// The parent and key of a node; `None` for the root or an unknown node.
+    fn place(&self, node: &NodeRef) -> Option<Place> {
+        match node {
+            NodeRef::Request(id) => {
+                let entry = self.collection.entry(*id)?;
+                Some(Place {
+                    parent: entry.folder().to_owned(),
+                    key: entry.stem().to_owned(),
+                })
+            }
+            NodeRef::Folder(dir) => {
+                self.folder(dir)?;
+                let key = dir.file_name()?.to_str()?.to_owned();
+                Some(Place {
+                    parent: dir.parent().map(Path::to_owned).unwrap_or_default(),
+                    key,
+                })
+            }
+        }
+    }
+
+    /// The `order` keys of a folder's children, in display order.
+    fn keys(&self, folder: &Folder) -> Vec<String> {
+        folder
+            .children()
+            .iter()
+            .filter_map(|n| match n {
+                Node::Folder(f) => f.path().file_name()?.to_str().map(str::to_owned),
+                Node::Entry(id) => self.collection.entry(*id).map(|e| e.stem().to_owned()),
+            })
+            .collect()
+    }
+
+    /// Whether `key` names a request, a directory or a reserved name in `parent`.
+    fn taken(&self, parent: &Path, key: &str) -> bool {
+        let reserved = RESERVED.contains(&key)
+            || (parent.as_os_str().is_empty() && RESERVED_AT_ROOT.contains(&key));
+        reserved
+            || self
+                .files
+                .get(&parent.join(format!("{key}{REQUEST_EXT}")))
+                .is_some()
+            || self.files.dirs().contains(&parent.join(key))
+    }
+
+    /// The slug of `name` (or `fallback`), with `-2`, `-3`, … until it is free in `parent`.
+    fn free_key(&self, parent: &Path, name: &str, fallback: &str) -> String {
+        let base = match edit::slug(name) {
+            slug if slug.is_empty() => fallback.to_owned(),
+            slug => slug,
+        };
+        let mut key = base.clone();
+        let mut n = 1u32;
+        while self.taken(parent, &key) {
+            n += 1;
+            key = format!("{base}-{n}");
+        }
+        key
+    }
+
+    /// The cached text of `path`; empty when the file does not exist.
+    fn text(&self, path: &Path) -> Result<String, Notice> {
+        match self.files.get(path) {
+            None => Ok(String::new()),
+            Some(bytes) => String::from_utf8(bytes.to_vec())
+                .map_err(|_| Notice::from_error(&ModelError::invalid_file(path, "not UTF-8"))),
+        }
+    }
 }
 
 #[cfg(test)]

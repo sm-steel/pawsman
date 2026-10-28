@@ -344,8 +344,52 @@ fn set_new_file_mode(_file: &std::fs::File) -> std::io::Result<()> {
 /// `core::exists` when a rename target exists; `core::write` when a change fails. Changes before
 /// the failing one stay done.
 pub fn apply(root: &Path, changes: &[Change]) -> Result<Vec<PathBuf>, CoreError> {
-    let _ = (root, changes);
-    Ok(Vec::new())
+    let mut kept = Vec::new();
+    for change in changes {
+        match change {
+            Change::Write { path, bytes } => write(root, path, bytes)?,
+            Change::Rename { from, to } => {
+                if !confined(from) || !confined(to) {
+                    return Err(CoreError::write(
+                        to,
+                        &std::io::Error::other("the path leaves the collection"),
+                    ));
+                }
+                let target = root.join(to);
+                if target.symlink_metadata().is_ok() {
+                    return Err(CoreError::exists(to));
+                }
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent).map_err(|e| CoreError::write(to, &e))?;
+                }
+                std::fs::rename(root.join(from), &target).map_err(|e| CoreError::write(to, &e))?;
+            }
+            Change::Remove(path) => {
+                if !confined(path) {
+                    continue;
+                }
+                match std::fs::remove_file(root.join(path)) {
+                    Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
+                        return Err(CoreError::write(path, &err));
+                    }
+                    _ => {}
+                }
+            }
+            Change::RemoveDirIfEmpty(path) => {
+                if !confined(path) || path.as_os_str().is_empty() {
+                    continue;
+                }
+                let full = root.join(path);
+                let empty = std::fs::read_dir(&full).is_ok_and(|mut d| d.next().is_none());
+                if empty {
+                    std::fs::remove_dir(&full).map_err(|e| CoreError::write(path, &e))?;
+                } else if full.is_dir() {
+                    kept.push(path.clone());
+                }
+            }
+        }
+    }
+    Ok(kept)
 }
 
 /// Creates a collection in `dir`: `pawsman.toml` named after the directory, and `.gitignore` lines
