@@ -1269,6 +1269,7 @@ dependencies = [
  "pawsman-model",
  "pawsman-net",
  "pawsman-test-support",
+ "proptest",
  "rstest",
  "serde",
  "tempfile",

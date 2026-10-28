@@ -110,6 +110,11 @@ mod tests {
             Path::new("/cfg/pawsman/globals.toml"),
             "globals file"
         );
+        assert_eq!(
+            paths.keys_file(),
+            Path::new("/cfg/pawsman/keys.toml"),
+            "keys file"
+        );
     }
 
     #[test]

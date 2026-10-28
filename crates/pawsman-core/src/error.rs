@@ -213,4 +213,20 @@ mod tests {
             "file and reason"
         );
     }
+
+    #[test]
+    fn file_errors_are_retryable_and_the_rest_permanent() {
+        use pawsman_error::Retry;
+        let io = std::io::Error::other("busy");
+
+        assert_eq!(
+            CoreError::write(Path::new("a"), &io).retry(),
+            Retry::Retryable
+        );
+        assert_eq!(
+            CoreError::read(Path::new("a"), &io).retry(),
+            Retry::Retryable
+        );
+        assert_eq!(CoreError::exists(Path::new("a")).retry(), Retry::Permanent);
+    }
 }

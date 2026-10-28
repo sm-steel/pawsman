@@ -247,4 +247,58 @@ mod tests {
             prop_assert_eq!(spelled, wanted);
         }
     }
+
+    fn points(query: &str, text: &str) -> u32 {
+        score(query, text).unwrap().score()
+    }
+
+    #[test]
+    fn scores_follow_the_formula() {
+        assert_eq!(
+            points("ab", "ab"),
+            16 + 24 + 16 + 20,
+            "start, then in a row"
+        );
+        assert_eq!(
+            points("ab", "a-b"),
+            40 - 6 + 16 + 20,
+            "one skipped, word start"
+        );
+        assert_eq!(points("ab", "axxb"), 40 - 7 + 16, "two skipped");
+        assert_eq!(points("ab", "axxxxb"), 40 - 9 + 16, "four skipped");
+        assert_eq!(
+            points("ab", "axxxxxb"),
+            40 - 10 + 16,
+            "five skipped: the cap"
+        );
+        assert_eq!(
+            points("ab", "axxxxxxxxxb"),
+            40 - 10 + 16,
+            "nine skipped: still the cap"
+        );
+        assert_eq!(
+            points("gU", "getUser"),
+            40 - 7 + 16 + 20,
+            "camel case starts a word"
+        );
+        assert_eq!(points("x", "yx"), 16, "a plain middle");
+    }
+
+    #[test]
+    fn the_best_alignment_wins_not_the_first() {
+        let m = score("ab", "a_xb_ab").unwrap();
+
+        assert_eq!(
+            m.positions(),
+            [5, 6],
+            "word start and in a row beat the early a"
+        );
+        assert_eq!(m.score(), 16 + 20 + 16 + 20);
+    }
+
+    #[test]
+    fn equal_scores_keep_the_earliest_match() {
+        assert_eq!(score("x", "-x-x").unwrap().positions(), [1]);
+        assert_eq!(order("a", &["xa", "ya"]), ["xa", "ya"], "stable");
+    }
 }

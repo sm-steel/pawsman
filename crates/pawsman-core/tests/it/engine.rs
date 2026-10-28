@@ -464,3 +464,16 @@ fn a_tree_change_does_not_overwrite_an_edit_the_watcher_has_not_reported() {
         "the outside edit survives"
     );
 }
+
+#[test]
+fn reload_by_hand_publishes_a_fresh_snapshot() {
+    let dir = collection("http://h/a");
+    let (engine, rx) = start(Some(dir.path()));
+    let first = wait(&rx, |s| s.collection().is_some());
+
+    engine.reload();
+    let again = wait(&rx, |_| true);
+
+    assert!(again.generation() > first.generation(), "reloaded");
+    assert!(again.collection().is_some(), "still open");
+}

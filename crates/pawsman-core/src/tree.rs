@@ -644,6 +644,70 @@ mod tests {
     }
 
     #[test]
+    fn a_name_without_letters_keeps_the_file_name() {
+        let (c, files) = setup(&[("me.req.toml", &req("me"))]);
+
+        let plan = plan(
+            &c,
+            &files,
+            &Op::Rename {
+                node: NodeRef::Request(id(&c, "me.req.toml")),
+                name: "!!".into(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            plan.changes,
+            [Change::Write {
+                path: "me.req.toml".into(),
+                bytes: req("!!").into_bytes()
+            }]
+        );
+    }
+
+    #[test]
+    fn a_nested_folder_is_found_among_its_siblings() {
+        let (c, files) = setup(&[("a/c/x.req.toml", &req("x")), ("a/b/y.req.toml", &req("y"))]);
+
+        let plan = plan(
+            &c,
+            &files,
+            &Op::Rename {
+                node: NodeRef::Folder("a/c".into()),
+                name: "D".into(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(plan.changes.first(), Some(&rename("a/c", "a/d")));
+    }
+
+    #[test]
+    fn move_down_writes_the_full_order() {
+        let (c, files) = setup(&[
+            ("a.req.toml", &req("a")),
+            ("b.req.toml", &req("b")),
+            ("c.req.toml", &req("c")),
+        ]);
+
+        let plan = plan(
+            &c,
+            &files,
+            &Op::Move {
+                node: NodeRef::Request(id(&c, "a.req.toml")),
+                dir: Direction::Down,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            written(&plan, "_folder.toml"),
+            "order = [\"b\", \"a\", \"c\"]\n"
+        );
+    }
+
+    #[test]
     fn deleting_a_request_removes_its_sidecars() {
         let (c, files) = setup(&[
             ("users/create.req.toml", &req("c")),

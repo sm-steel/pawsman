@@ -463,12 +463,9 @@ impl App {
     /// Typing into the prompt or the palette query: characters, Backspace, paste. `false` when
     /// no text field is open or `input` is not text.
     fn type_into_prompt(&mut self, input: &Input) -> bool {
-        let field = match &mut self.overlay {
-            Overlay::Prompt(prompt) => &mut prompt.text,
-            Overlay::Palette { query, at } => {
-                *at = 0;
-                query
-            }
+        let (field, at) = match &mut self.overlay {
+            Overlay::Prompt(prompt) => (&mut prompt.text, None),
+            Overlay::Palette { query, at } => (query, Some(at)),
             _ => return false,
         };
         let text = match input {
@@ -479,8 +476,11 @@ impl App {
                 c.to_string()
             }
             Input::Key(chord) if chord.mods().is_empty() && chord.code() == KeyCode::Backspace => {
-                if let Some((at, _)) = field.grapheme_indices(true).next_back() {
-                    field.truncate(at);
+                if let Some((end, _)) = field.grapheme_indices(true).next_back() {
+                    field.truncate(end);
+                }
+                if let Some(at) = at {
+                    *at = 0;
                 }
                 return true;
             }
@@ -489,6 +489,10 @@ impl App {
         };
         let room = PROMPT_MAX.saturating_sub(field.chars().count());
         field.extend(text.chars().take(room));
+        // A new query ranks anew; the highlight goes back to the best match.
+        if let Some(at) = at {
+            *at = 0;
+        }
         true
     }
 
@@ -1800,6 +1804,89 @@ mod tests {
         }
 
         #[test]
+        fn a_vanished_selection_takes_the_row_at_its_place() {
+            let mut ids = pawsman_model::Ids::default();
+            let build = |files: &[(&str, &str)], ids: &mut pawsman_model::Ids| {
+                let files = files
+                    .iter()
+                    .chain(&[("pawsman.toml", "format = 1\nname = \"Demo\"\n")])
+                    .map(|(n, t)| {
+                        pawsman_model::SourceFile::new(PathBuf::from(n), t.as_bytes().to_vec())
+                    })
+                    .collect();
+                Collection::build(Path::new("/demo"), files, ids)
+            };
+            let mut st = AppState::new(
+                build(TREE, &mut ids),
+                pawsman_core::resolve::Context::default(),
+            );
+            let mut app = app_with(&mut st);
+            keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
+            let without_two: Vec<(&str, &str)> = TREE
+                .iter()
+                .copied()
+                .filter(|(p, _)| *p != "b/two.req.toml")
+                .collect();
+
+            st.apply(
+                Event::Reloaded(Box::new(build(&without_two, &mut ids))),
+                Instant::now(),
+            );
+            app.update(Msg::Snapshot(st.snapshot()), Duration::ZERO)
+                .unwrap();
+
+            assert_eq!(
+                sends(&mut app),
+                vec![UiCommand::Send(RequestId::new(3))],
+                "Top took Two's row"
+            );
+        }
+
+        #[test]
+        fn right_opens_a_closed_folder() {
+            let mut app = app_with(&mut state(TREE));
+            keys(&mut app, &[KeyCode::Up, KeyCode::Left, KeyCode::Right]);
+
+            let text = screen(&render(&mut app, 160, 40, Duration::ZERO));
+
+            assert!(text.contains("One"), "open again:\n{text}");
+        }
+
+        #[test]
+        fn up_and_down_move_the_palette_highlight() {
+            let mut st = state_with(ENVS, &[]);
+            for moves in [
+                &[KeyCode::Down, KeyCode::Down][..],
+                &[KeyCode::Down, KeyCode::Down, KeyCode::Down, KeyCode::Up][..],
+            ] {
+                let mut app = app_with(&mut st);
+                press(&mut app, [key(Chord::ctrl('k'))]);
+                keys(&mut app, moves);
+                keys(&mut app, &[KeyCode::Enter]);
+
+                let text = screen(&render(&mut app, 160, 40, Duration::ZERO));
+                assert!(
+                    text.contains("Environment"),
+                    "the third item, Pick environment ({moves:?}):\n{text}"
+                );
+            }
+        }
+
+        #[test]
+        fn other_keys_do_nothing_in_the_dialog() {
+            let mut app = app_with(&mut state(TREE));
+
+            press(&mut app, [char_key('d'), char_key('a'), char_key('e')]);
+            let text = screen(&render(&mut app, 160, 40, Duration::ZERO));
+
+            assert!(text.contains("Delete request One?"), "{text}");
+            assert!(
+                !text.contains("New request") && !text.contains("Environment"),
+                "{text}"
+            );
+        }
+
+        #[test]
         fn snapshot_160x40_tree_collapsed() {
             let mut app = app_with(&mut state(TREE));
             keys(&mut app, &[KeyCode::Up, KeyCode::Left]);
@@ -2028,6 +2115,34 @@ mod tests {
             "the rest of the table scrolls in:\n{scrolled}"
         );
         assert!(!closed.contains("copy the selection"), "closed:\n{closed}");
+    }
+
+    #[test]
+    fn help_scrolls_down_and_back_up() {
+        let mut app = App::new(SplashSetting::Off, caps(), vec![]);
+        app.update(key(Chord::plain(KeyCode::F(1))), Duration::ZERO)
+            .unwrap();
+
+        for _ in 0..3 {
+            app.update(key(Chord::plain(KeyCode::Down)), Duration::ZERO)
+                .unwrap();
+        }
+        let down = screen(&render(&mut app, 80, 24, Duration::ZERO));
+        for _ in 0..3 {
+            app.update(key(Chord::plain(KeyCode::Up)), Duration::ZERO)
+                .unwrap();
+        }
+        app.update(key(Chord::plain(KeyCode::PageDown)), Duration::ZERO)
+            .unwrap();
+        app.update(key(Chord::plain(KeyCode::PageUp)), Duration::ZERO)
+            .unwrap();
+        let back = screen(&render(&mut app, 80, 24, Duration::ZERO));
+
+        assert!(
+            !down.contains("Alt-Enter"),
+            "the first row scrolled away:\n{down}"
+        );
+        assert!(back.contains("Alt-Enter"), "back at the top:\n{back}");
     }
 
     #[test]

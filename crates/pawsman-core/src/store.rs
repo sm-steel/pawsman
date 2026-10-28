@@ -170,16 +170,6 @@ impl Files {
         refresh
     }
 
-    /// Records bytes the engine itself wrote.
-    pub fn put(&mut self, rel: &Path, bytes: Vec<u8>) {
-        self.bytes.insert(rel.to_owned(), bytes);
-    }
-
-    /// Forgets a file the engine itself removed.
-    pub fn forget(&mut self, rel: &Path) {
-        self.bytes.remove(rel);
-    }
-
     /// Builds the collection, keeping request ids in `ids`.
     ///
     /// # Errors
@@ -1002,5 +992,170 @@ mod tests {
             "target\n.env\n.pawsman/\n",
             "only the missing line, after a newline"
         );
+    }
+
+    #[test]
+    fn refresh_ignores_paths_the_walk_skips() {
+        let dir = tempfile::tempdir().unwrap();
+        put(dir.path(), "pawsman.toml", MANIFEST);
+        let mut files = Files::read(dir.path());
+        put(dir.path(), ".git/x.req.toml", REQ);
+        put(dir.path(), "notes.md", "x");
+        put(dir.path(), "node_modules/y.req.toml", REQ);
+
+        let refresh = files.refresh(&[
+            PathBuf::from(".git/x.req.toml"),
+            PathBuf::from("notes.md"),
+            PathBuf::from("node_modules"),
+            PathBuf::from("../x.req.toml"),
+            PathBuf::new(),
+        ]);
+
+        assert!(!refresh.changed && refresh.errors.is_empty(), "{refresh:?}");
+        assert_eq!(
+            files.paths().collect::<Vec<_>>(),
+            [Path::new("pawsman.toml")]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refresh_does_not_read_a_symlink_out_of_the_collection() {
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("k"), "PRIVATE").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        put(dir.path(), "pawsman.toml", MANIFEST);
+        let mut files = Files::read(dir.path());
+        std::os::unix::fs::symlink(outside.path().join("k"), dir.path().join("a.body.txt"))
+            .unwrap();
+        put(dir.path(), "b.req.toml", REQ);
+        std::os::unix::fs::symlink(dir.path().join("b.req.toml"), dir.path().join("c.req.toml"))
+            .unwrap();
+
+        files.refresh(&[PathBuf::from("a.body.txt"), PathBuf::from("c.req.toml")]);
+
+        assert!(
+            files.get(Path::new("a.body.txt")).is_none(),
+            "outside not read"
+        );
+        assert!(
+            files.get(Path::new("c.req.toml")).is_some(),
+            "inside link read"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_path_is_core_read_and_keeps_its_old_bytes() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        put(dir.path(), "pawsman.toml", MANIFEST);
+        put(dir.path(), "a.req.toml", REQ);
+        put(dir.path(), "users/b.req.toml", REQ);
+        let mut files = Files::read(dir.path());
+        std::fs::set_permissions(
+            dir.path().join("a.req.toml"),
+            std::fs::Permissions::from_mode(0o000),
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            dir.path().join("users"),
+            std::fs::Permissions::from_mode(0o000),
+        )
+        .unwrap();
+        if std::fs::read(dir.path().join("a.req.toml")).is_ok() {
+            return; // root reads anything
+        }
+
+        let refresh = files.refresh(&[
+            PathBuf::from("a.req.toml"),
+            PathBuf::from("users/b.req.toml"),
+        ]);
+        std::fs::set_permissions(
+            dir.path().join("users"),
+            std::fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+
+        assert_eq!(
+            refresh
+                .errors
+                .iter()
+                .map(pawsman_error::ErrorInfo::code)
+                .collect::<Vec<_>>(),
+            [crate::codes::READ, crate::codes::READ]
+        );
+        assert!(!refresh.changed, "nothing dropped");
+        assert!(files.get(Path::new("users/b.req.toml")).is_some(), "kept");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn apply_never_renames_or_removes_through_a_symlinked_directory() {
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("x.req.toml"), "theirs").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("shared")).unwrap();
+
+        let rename = apply(
+            dir.path(),
+            &[Change::Rename {
+                from: "shared/x.req.toml".into(),
+                to: "x.req.toml".into(),
+            }],
+        );
+        apply(
+            dir.path(),
+            &[
+                Change::Remove("shared/x.req.toml".into()),
+                Change::RemoveDirIfEmpty("shared".into()),
+            ],
+        )
+        .unwrap();
+
+        assert!(rename.is_err(), "rename refused");
+        assert!(outside.path().join("x.req.toml").exists(), "not removed");
+    }
+
+    #[test]
+    fn removing_a_missing_file_is_fine() {
+        let dir = tempfile::tempdir().unwrap();
+
+        assert!(apply(dir.path(), &[Change::Remove("gone.req.toml".into())]).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_remove_that_fails_is_core_write() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        put(dir.path(), "users/a.req.toml", REQ);
+        std::fs::set_permissions(
+            dir.path().join("users"),
+            std::fs::Permissions::from_mode(0o500),
+        )
+        .unwrap();
+        if std::fs::write(dir.path().join("users/probe"), b"").is_ok() {
+            return; // root ignores permissions
+        }
+
+        let err = apply(dir.path(), &[Change::Remove("users/a.req.toml".into())]).unwrap_err();
+        std::fs::set_permissions(
+            dir.path().join("users"),
+            std::fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+
+        assert_eq!(err.code(), crate::codes::WRITE);
+    }
+
+    #[test]
+    fn init_reports_a_gitignore_it_cannot_read() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".gitignore")).unwrap();
+
+        let err = init(dir.path()).unwrap_err();
+
+        assert_eq!(err.code(), crate::codes::WRITE);
     }
 }

@@ -720,6 +720,8 @@ mod tests {
     #[case("Space", Chord::plain(KeyCode::Char(' ')))]
     #[case("F12", Chord::plain(KeyCode::F(12)))]
     #[case("Meta-x", Chord::new(KeyCode::Char('x'), Mods::META))]
+    #[case("Super-x", Chord::new(KeyCode::Char('x'), Mods::SUPER))]
+    #[case("Hyper-x", Chord::new(KeyCode::Char('x'), Mods::HYPER))]
     fn chord_aliases_parse(#[case] text: &str, #[case] expected: Chord) {
         assert_eq!(text.parse::<Chord>(), Ok(expected), "{text}");
     }
@@ -848,5 +850,27 @@ mod tests {
             Some(Action::Send),
             "defaults"
         );
+    }
+
+    #[test]
+    fn an_unreadable_file_loads_the_defaults_and_the_error() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("keys.toml")).unwrap();
+
+        let (_, err) = Keymap::load(&dir.path().join("keys.toml"));
+
+        assert_eq!(err.map(|e| e.code()), Some(crate::codes::KEYS_INVALID));
+    }
+
+    #[test]
+    fn bindings_name_their_contexts() {
+        let keys = Keymap::default();
+        let send = keys
+            .bindings()
+            .iter()
+            .find(|b| b.action() == Action::Send)
+            .unwrap();
+
+        assert_eq!(send.contexts(), [Context::Main]);
     }
 }

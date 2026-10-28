@@ -771,6 +771,51 @@ mod tests {
     }
 
     #[test]
+    fn a_broken_env_stays_off_while_another_one_is_fine() {
+        let mut s = AppState::new(Ok(collection(ENVS)), Context::default());
+        s.apply(Event::SelectEnv(Some("dev".into())), now());
+        let broken = [ENVS[0], ("envs/dev.env.toml", "vars = 1\n"), ENVS[2]];
+
+        s.apply(Event::Reloaded(Box::new(Ok(collection(&broken)))), now());
+        s.apply(Event::Reloaded(Box::new(Ok(collection(&broken)))), now());
+
+        assert_eq!(s.snapshot().active_env(), None, "not prod in dev's place");
+    }
+
+    #[test]
+    fn usable_envs_exist_and_parse() {
+        let s = AppState::new(Ok(collection(ENVS)), Context::default());
+
+        assert!(s.has_usable_env("dev"), "dev");
+        assert!(!s.has_usable_env("broken"), "broken");
+        assert!(!s.has_usable_env("nope"), "unknown");
+    }
+
+    #[test]
+    fn a_failed_first_load_stays_an_error_and_changes_the_generation() {
+        let mut s = AppState::empty();
+        let g = s.generation();
+
+        s.apply(
+            Event::Reloaded(Box::new(Err(ModelError::not_a_collection(Path::new("/x"))))),
+            now(),
+        );
+
+        assert!(s.generation() > g, "a change");
+        assert!(s.snapshot().load_error().is_some(), "the error");
+    }
+
+    #[test]
+    fn created_changes_the_generation() {
+        let mut s = AppState::new(Ok(demo()), Context::default());
+        let g = s.generation();
+
+        s.apply(Event::Created("a.req.toml".into()), now());
+
+        assert!(s.generation() > g, "a change");
+    }
+
+    #[test]
     fn reload_keeps_a_working_env() {
         let mut s = AppState::new(Ok(collection(ENVS)), Context::default());
         s.apply(Event::SelectEnv(Some("dev".into())), now());
