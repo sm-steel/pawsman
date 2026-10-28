@@ -51,6 +51,19 @@ One line per non-obvious decision.
 - **Body files stay inside the collection** — `file` paths are relative without `..`, and a file or sidecar that resolves outside through a symlink is not read, so pressing F5 in a cloned collection cannot upload `~/.ssh`.
 - **`core::body_file` for unreadable body files** — the model is pure, so files named in `[body]` are read when sending, and their errors are core's.
 - **secrecy 0.10.3 though its last release is 2024-10** — an obviously finished crate (a small wrapper over zeroize, 188 M downloads) with commits in its repository in 2026 (→ [rules §1](../rules/rust-project.md#1-working-agreement)).
-- **No environment at start** — the last pick is remembered with the UI state in piece 1.4.
+- **The active environment is remembered per collection** — in `.pawsman/state.toml`, which `pawsman init` git-ignores; a remembered environment that is gone or broken is dropped silently.
 - **The store skips hidden directories, `node_modules` and `target`, follows no symlinked directory, and stops at 16 levels and 10 000 files** — opening a repository root as a collection must stay fast.
 - **The hint bar drops hints to fit, never quit or help** — `trace`, `env` and `pane` go first on narrow terminals; F1 still lists everything.
+- **Request ids are stable by path** — a reload keeps each file's id, so the selection and a response survive an outside edit; a rename carries the id to the new path.
+- **A folder with only `_folder.toml` is a node** — so a new folder shows before it holds a request.
+- **Single-key edits through `toml_edit`** — a rename or reorder changes only its line and keeps comments, so `git diff` shows what happened.
+- **Own debounce instead of notify-debouncer-full** — 100 ms of quiet, 1 s at most; its rename matching by file id is not needed when reloading by path, and it would add walkdir, file-id and notify-types.
+- **Own fuzzy matcher instead of nucleo-matcher** — nucleo-matcher is MPL-2.0, outside the `deny.toml` licence list, and frizbee carries about 900 `unsafe` SIMD blocks for what is a list of hundreds; ~120 pure, property-tested lines suffice.
+- **One watch per walked directory** — never recursive, so `.git` and `node_modules` cost no inotify watches.
+- **Own writes are ignored through the byte cache** — the engine reads what it wrote at once, so the watcher's echo finds the same bytes; no hash list to expire.
+- **Deleting a folder removes only collection files** — other files (`notes.md`, images) stay with their folder, and a notice says so.
+- **A rename moves the file and its `order` entry, not its sidecars** — sidecar references are file names next to the request, so they stay valid.
+- **Folder rows are selectable** — rename, delete, move and collapse act on folders.
+- **`keys.toml` is all or nothing** — one bad line ignores the file with `core::keys_invalid`, so a half-applied keymap never surprises; quit and help always keep a key.
+- **Letters fold with their case on a Cyrillic layout** — Shift-л is `K` (move up), not `k`.
+- **The F1 overlay scrolls** — with every binding listed it outgrows 80×24; the hint bar's rows come first.

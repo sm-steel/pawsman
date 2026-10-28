@@ -53,6 +53,26 @@ flowchart LR
 
 A collection is a directory: `pawsman.toml` (format version, defaults), `envs/*.env.toml`, folders with optional `_folder.toml` and one `*.req.toml` per request, sidecar bodies, a git-ignored `.env` and `.pawsman/` for local state. Details: [spec §2](superpowers/specs/2026-10-23-pawsman-design.md#2-on-disk-format-variables-and-secrets).
 
+Files on disk are the source of truth. The engine keeps their bytes (`store::Files`), so a change made in pawsman is in the cache before the watcher reports it, and the echo changes nothing:
+
+```mermaid
+sequenceDiagram
+  participant W as watcher thread
+  participant E as engine thread
+  participant D as disk
+  participant U as TUI
+  D-->>W: inotify / FSEvents per walked directory
+  W->>E: batch of changed paths (100 ms quiet, 1 s at most)
+  E->>D: read those paths again
+  E->>E: rebuild Collection if a byte changed (ids kept by path)
+  E->>U: Snapshot
+  U->>E: tree Op (new, rename, delete, move)
+  E->>E: tree::plan from cached bytes (pure)
+  E->>D: store::apply (temp file + rename)
+  E->>D: read the touched paths into the cache
+  E->>U: Snapshot with the created node
+```
+
 ## 4. Variable scopes
 
 Highest wins: runtime, request, folder chain (nearest first), environment, collection, global, then process env through `{{env.NAME}}` only. Secrets resolve from process env, `.env`, the OS keyring, then the age vault (keyring and vault from M3).
