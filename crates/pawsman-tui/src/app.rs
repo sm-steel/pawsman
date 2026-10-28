@@ -8,6 +8,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use pawsman_core::engine::Engine;
+use pawsman_core::fuzzy::Match;
 use pawsman_core::keys::{Action, Context, KeyCode, Keymap, Mods};
 use pawsman_core::notice::Notice;
 use pawsman_core::resolve::Preview;
@@ -20,12 +21,13 @@ use unicode_segmentation::UnicodeSegmentation as _;
 
 use crate::input::MouseKind;
 use crate::input::{Input, Reader};
+use crate::palette;
 use crate::term::{Caps, InTmux, Term, probe};
 use crate::tree::{self, Row};
 use crate::views::main::{self, Focus, MainView, TraceView};
 use crate::views::picker::{self, Item};
 use crate::views::splash::{self, Splash};
-use crate::views::{ask, colors, help, home, prompt};
+use crate::views::{ask, colors, help, home, palette as palette_view, prompt};
 use crate::{Options, TuiError};
 
 /// Everything the main loop reacts to.
@@ -112,6 +114,11 @@ enum Overlay {
     Prompt(Prompt),
     /// A yes or no question before an operation.
     Ask(Ask),
+    /// The command palette: the query and the highlighted row.
+    Palette {
+        query: String,
+        at: usize,
+    },
 }
 
 /// A one-line text field in a box.
@@ -453,10 +460,16 @@ impl App {
         self.overlay = Overlay::None;
     }
 
-    /// Typing into the prompt: characters, Backspace, paste. `false` when `input` is not text.
+    /// Typing into the prompt or the palette query: characters, Backspace, paste. `false` when
+    /// no text field is open or `input` is not text.
     fn type_into_prompt(&mut self, input: &Input) -> bool {
-        let Overlay::Prompt(prompt) = &mut self.overlay else {
-            return false;
+        let field = match &mut self.overlay {
+            Overlay::Prompt(prompt) => &mut prompt.text,
+            Overlay::Palette { query, at } => {
+                *at = 0;
+                query
+            }
+            _ => return false,
         };
         let text = match input {
             Input::Key(chord)
@@ -466,17 +479,68 @@ impl App {
                 c.to_string()
             }
             Input::Key(chord) if chord.mods().is_empty() && chord.code() == KeyCode::Backspace => {
-                if let Some((at, _)) = prompt.text.grapheme_indices(true).next_back() {
-                    prompt.text.truncate(at);
+                if let Some((at, _)) = field.grapheme_indices(true).next_back() {
+                    field.truncate(at);
                 }
                 return true;
             }
             Input::Paste(text) => text.chars().filter(|c| !c.is_control()).collect(),
             _ => return false,
         };
-        let room = PROMPT_MAX.saturating_sub(prompt.text.chars().count());
-        prompt.text.extend(text.chars().take(room));
+        let room = PROMPT_MAX.saturating_sub(field.chars().count());
+        field.extend(text.chars().take(room));
         true
+    }
+
+    /// The notice for Ctrl-C with nothing selected.
+    fn copy_hint(&mut self) {
+        self.notices.push_back(Notice::info(format!(
+            "nothing selected · {} quits",
+            self.keys.label(Action::Quit).unwrap_or_default()
+        )));
+    }
+
+    /// The palette's items for `query`, best first.
+    fn palette_items(&self, query: &str) -> Vec<(palette::Item, Match)> {
+        let Some(snapshot) = &self.snapshot else {
+            return Vec::new();
+        };
+        palette::filter(palette::items(snapshot, &self.keys), query)
+    }
+
+    /// Up, Down and Enter in the palette; returns the action to run after it closes.
+    fn palette_action(&mut self, action: Action, query: &str, at: usize) -> Option<Action> {
+        let items = self.palette_items(query);
+        match action {
+            Action::Up | Action::Down => {
+                let next = if action == Action::Up {
+                    at.saturating_sub(1)
+                } else {
+                    (at + 1).min(items.len().saturating_sub(1))
+                };
+                self.overlay = Overlay::Palette {
+                    query: query.to_owned(),
+                    at: next,
+                };
+                None
+            }
+            Action::Confirm => {
+                let (item, _) = items.into_iter().nth(at)?;
+                self.overlay = Overlay::None;
+                match item {
+                    palette::Item::Request { id, .. } => {
+                        let node = NodeRef::Request(id);
+                        self.reveal(&node);
+                        self.selected = Some(node);
+                        self.focus = Focus::Sidebar;
+                        self.scroll = 0;
+                        None
+                    }
+                    palette::Item::Action { action, .. } => Some(action),
+                }
+            }
+            _ => None,
+        }
     }
 
     fn main_action(&mut self, action: Action) {
@@ -523,6 +587,12 @@ impl App {
                 self.overlay = Overlay::Picker(at);
             }
             Action::Trace => self.trace = self.trace.toggled(),
+            Action::Palette => {
+                self.overlay = Overlay::Palette {
+                    query: String::new(),
+                    at: 0,
+                };
+            }
             action => self.tree_action(action),
         }
     }
@@ -591,6 +661,7 @@ impl App {
             (Screen::Main, Overlay::Picker(_)) => Context::Picker,
             (Screen::Main, Overlay::Prompt(_)) => Context::Prompt,
             (Screen::Main, Overlay::Ask(_)) => Context::Ask,
+            (Screen::Main, Overlay::Palette { .. }) => Context::Palette,
             (Screen::Home, _) => Context::Home,
             (Screen::Main, Overlay::None) => Context::Main,
         }
@@ -649,15 +720,22 @@ impl App {
             Some(action) if let Overlay::Prompt(prompt) = &self.overlay => {
                 self.prompt_action(action, prompt.clone());
             }
+            Some(action) if let Overlay::Palette { query, at } = &self.overlay => {
+                let (query, at) = (query.clone(), *at);
+                match self.palette_action(action, &query, at) {
+                    Some(Action::Quit) => return Ok(Flow::Quit),
+                    Some(Action::Help) => self.overlay = Overlay::Help(0),
+                    Some(Action::Copy) => self.copy_hint(),
+                    Some(action) => self.main_action(action),
+                    None => {}
+                }
+            }
             Some(Action::Confirm) if let Overlay::Ask(ask) = &self.overlay => {
                 self.commands.push(UiCommand::Op(ask.op.clone()));
                 self.overlay = Overlay::None;
             }
             Some(_) if matches!(self.overlay, Overlay::Ask(_)) => {}
-            Some(Action::Copy) => self.notices.push_back(Notice::info(format!(
-                "nothing selected · {} quits",
-                self.keys.label(Action::Quit).unwrap_or_default()
-            ))),
+            Some(Action::Copy) => self.copy_hint(),
             Some(action) if matches!(self.screen, Screen::Main) => self.main_action(action),
             None if !chord.mods().is_empty() => tracing::debug!(%chord, "unbound key"),
             Some(_) | None => {}
@@ -714,6 +792,10 @@ impl App {
             Overlay::Picker(at) => picker::draw(frame, area, &self.picker_items(), *at),
             Overlay::Prompt(p) => prompt::draw(frame, area, &p.title, &p.text),
             Overlay::Ask(a) => ask::draw(frame, area, &a.text),
+            Overlay::Palette { query, at } => {
+                let items = self.palette_items(query);
+                palette_view::draw(frame, area, query, &items, *at);
+            }
             Overlay::None => {}
         }
         colors::downsample(frame.buffer_mut(), area, self.caps.color());
