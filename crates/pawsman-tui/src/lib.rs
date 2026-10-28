@@ -7,6 +7,7 @@ mod error;
 pub mod input;
 mod options;
 pub mod term;
+mod tree;
 mod views;
 #[cfg(test)]
 mod visual;

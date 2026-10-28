@@ -11,6 +11,7 @@ use pawsman_core::keys::{Action, Context, Keymap};
 use pawsman_core::notice::Notice;
 use pawsman_core::resolve::Preview;
 use pawsman_core::state::Snapshot;
+use pawsman_core::tree::Op;
 use pawsman_model::RequestId;
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::{Frame, Terminal};
@@ -61,6 +62,10 @@ pub(crate) enum UiCommand {
     Cancel(RequestId),
     /// Resolve in this environment; `None` for none.
     SelectEnv(Option<String>),
+    /// Change the tree on disk.
+    Op(Op),
+    /// Read the collection from disk again.
+    Reload,
 }
 
 /// Whether the startup splash plays.
@@ -568,6 +573,8 @@ fn event_loop<B: Backend<Error = std::io::Error>>(
                 (Some(engine), UiCommand::Send(id)) => engine.send(id),
                 (Some(engine), UiCommand::Cancel(id)) => engine.cancel(id),
                 (Some(engine), UiCommand::SelectEnv(env)) => engine.select_env(env),
+                (Some(engine), UiCommand::Op(op)) => engine.apply(op),
+                (Some(engine), UiCommand::Reload) => engine.reload(),
                 (None, _) => {}
             }
         }
@@ -626,6 +633,7 @@ mod tests {
         use std::time::Instant;
 
         use pawsman_core::state::{AppState, Event};
+        use pawsman_core::tree::{Direction, NodeRef};
         use pawsman_model::Collection;
         use pawsman_net::{NetEvent, Response};
 
@@ -983,23 +991,338 @@ mod tests {
             app_with(st)
         }
 
+        fn keys(app: &mut App, codes: &[KeyCode]) {
+            press(app, codes.iter().map(|c| key(Chord::plain(*c))));
+        }
+
+        fn typed(app: &mut App, text: &str) {
+            press(app, text.chars().map(char_key));
+        }
+
+        fn sends(app: &mut App) -> Vec<UiCommand> {
+            press(app, [key(Chord::plain(KeyCode::F(5)))]);
+            app.take_commands()
+        }
+
         #[test]
-        fn down_skips_folder_rows() {
+        fn down_visits_folder_rows() {
+            let mut app = app_with(&mut state(TREE));
+
+            keys(&mut app, &[KeyCode::Down]);
+            let on_folder = sends(&mut app);
+            keys(&mut app, &[KeyCode::Down]);
+            let on_two = sends(&mut app);
+
+            assert!(on_folder.is_empty(), "the `b` folder row: {on_folder:?}");
+            assert_eq!(
+                on_two,
+                vec![UiCommand::Send(RequestId::new(2))],
+                "then b/two"
+            );
+        }
+
+        #[test]
+        fn left_collapses_then_goes_to_the_parent() {
+            let mut app = app_with(&mut state(TREE));
+
+            keys(&mut app, &[KeyCode::Left]);
+            let on_folder = sends(&mut app);
+            keys(&mut app, &[KeyCode::Left]);
+            let text = screen(&render(&mut app, 160, 40, Duration::ZERO));
+            keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
+
+            assert!(on_folder.is_empty(), "on the `a` folder: {on_folder:?}");
+            assert!(!text.contains("One"), "collapsed:\n{text}");
+            assert_eq!(
+                sends(&mut app),
+                vec![UiCommand::Send(RequestId::new(2))],
+                "a (collapsed) → b → two"
+            );
+        }
+
+        #[test]
+        fn enter_toggles_a_folder() {
+            let mut app = app_with(&mut state(TREE));
+            keys(&mut app, &[KeyCode::Up, KeyCode::Enter]);
+            let closed = screen(&render(&mut app, 160, 40, Duration::ZERO));
+            keys(&mut app, &[KeyCode::Enter]);
+            let open = screen(&render(&mut app, 160, 40, Duration::ZERO));
+
+            assert!(!closed.contains("One"), "closed:\n{closed}");
+            assert!(open.contains("One"), "open:\n{open}");
+            assert!(app.take_commands().is_empty(), "no command");
+        }
+
+        #[test]
+        fn a_opens_a_prompt_and_enter_queues_new_request_in_the_folder() {
+            let mut app = app_with(&mut state(TREE));
+
+            press(&mut app, [char_key('a')]);
+            let text = screen(&render(&mut app, 160, 40, Duration::ZERO));
+            typed(&mut app, "Get x");
+            keys(&mut app, &[KeyCode::Enter]);
+
+            assert!(text.contains("New request in Alpha"), "title:\n{text}");
+            assert_eq!(
+                app.take_commands(),
+                vec![UiCommand::Op(Op::NewRequest {
+                    parent: "a".into(),
+                    name: "Get x".into()
+                })]
+            );
+        }
+
+        #[test]
+        fn shift_a_makes_a_folder_and_a_blank_name_does_nothing() {
+            let mut app = app_with(&mut state(TREE));
+
+            press(&mut app, [char_key('A')]);
+            typed(&mut app, "  ");
+            keys(&mut app, &[KeyCode::Enter, KeyCode::Esc]);
+            press(&mut app, [char_key('A')]);
+            typed(&mut app, "Sub");
+            keys(&mut app, &[KeyCode::Enter]);
+
+            assert_eq!(
+                app.take_commands(),
+                vec![UiCommand::Op(Op::NewFolder {
+                    parent: "a".into(),
+                    name: "Sub".into()
+                })]
+            );
+        }
+
+        #[test]
+        fn letters_type_in_the_prompt_even_when_bound() {
+            let mut app = app_with(&mut state_with(ENVS, &[]));
+
+            press(&mut app, [char_key('a')]);
+            typed(&mut app, "etjk");
+            let text = screen(&render(&mut app, 160, 40, Duration::ZERO));
+            keys(&mut app, &[KeyCode::Enter]);
+
+            assert!(!text.contains("Environment"), "no picker:\n{text}");
+            assert!(text.contains("etjk"), "typed:\n{text}");
+            assert_eq!(
+                app.take_commands(),
+                vec![UiCommand::Op(Op::NewRequest {
+                    parent: "".into(),
+                    name: "etjk".into()
+                })]
+            );
+        }
+
+        #[test]
+        fn a_paste_types_into_the_prompt_without_newlines() {
             let mut app = app_with(&mut state(TREE));
 
             press(
                 &mut app,
                 [
-                    key(Chord::plain(KeyCode::Down)),
-                    key(Chord::plain(KeyCode::F(5))),
+                    char_key('a'),
+                    Msg::Input(Input::Paste("Get\nuser\x1b".into())),
                 ],
             );
+            keys(&mut app, &[KeyCode::Enter]);
 
             assert_eq!(
                 app.take_commands(),
-                vec![UiCommand::Send(RequestId::new(2))],
-                "from a/one straight to b/two, past the `b` folder row"
+                vec![UiCommand::Op(Op::NewRequest {
+                    parent: "a".into(),
+                    name: "Getuser".into()
+                })]
             );
+        }
+
+        #[test]
+        fn ctrl_q_quits_from_the_prompt() {
+            let mut app = app_with(&mut state(TREE));
+            press(&mut app, [char_key('a')]);
+
+            let flow = app.update(key(Chord::ctrl('q')), Duration::ZERO).unwrap();
+
+            assert_eq!(flow, Flow::Quit, "quit");
+        }
+
+        #[test]
+        fn rename_prefills_the_name() {
+            let mut app = app_with(&mut state(TREE));
+
+            press(&mut app, [char_key('r')]);
+            let text = screen(&render(&mut app, 160, 40, Duration::ZERO));
+            keys(&mut app, &[KeyCode::Backspace; 3]);
+            typed(&mut app, "Uno");
+            keys(&mut app, &[KeyCode::Enter]);
+
+            assert!(text.contains("Rename One"), "title:\n{text}");
+            assert_eq!(
+                app.take_commands(),
+                vec![UiCommand::Op(Op::Rename {
+                    node: NodeRef::Request(RequestId::new(1)),
+                    name: "Uno".into()
+                })]
+            );
+        }
+
+        #[test]
+        fn delete_asks_and_y_confirms() {
+            let mut app = app_with(&mut state(TREE));
+
+            press(&mut app, [char_key('d')]);
+            let text = screen(&render(&mut app, 160, 40, Duration::ZERO));
+            press(&mut app, [char_key('y')]);
+
+            assert!(text.contains("Delete request One?"), "asked:\n{text}");
+            assert_eq!(
+                app.take_commands(),
+                vec![UiCommand::Op(Op::Delete(NodeRef::Request(RequestId::new(
+                    1
+                ))))]
+            );
+        }
+
+        #[test]
+        fn deleting_a_folder_names_its_requests() {
+            let mut app = app_with(&mut state(TREE));
+
+            keys(&mut app, &[KeyCode::Up]);
+            press(&mut app, [char_key('d')]);
+            let text = screen(&render(&mut app, 160, 40, Duration::ZERO));
+
+            assert!(
+                text.contains("Delete folder Alpha and its 1 request?"),
+                "{text}"
+            );
+        }
+
+        #[test]
+        fn esc_and_n_cancel_the_ask() {
+            let mut app = app_with(&mut state(TREE));
+
+            press(&mut app, [char_key('d'), key(Chord::plain(KeyCode::Esc))]);
+            press(&mut app, [char_key('d'), char_key('n')]);
+
+            assert!(app.take_commands().is_empty(), "nothing deleted");
+        }
+
+        #[test]
+        fn shift_k_and_j_move_and_ctrl_r_reloads() {
+            let mut app = app_with(&mut state(TREE));
+
+            press(
+                &mut app,
+                [char_key('K'), char_key('J'), key(Chord::ctrl('r'))],
+            );
+
+            let node = NodeRef::Request(RequestId::new(1));
+            assert_eq!(
+                app.take_commands(),
+                vec![
+                    UiCommand::Op(Op::Move {
+                        node: node.clone(),
+                        dir: Direction::Up
+                    }),
+                    UiCommand::Op(Op::Move {
+                        node,
+                        dir: Direction::Down
+                    }),
+                    UiCommand::Reload,
+                ]
+            );
+        }
+
+        #[test]
+        fn a_created_path_is_selected_and_its_folder_expanded() {
+            let mut st = state(TREE);
+            let mut app = app_with(&mut st);
+            keys(
+                &mut app,
+                &[KeyCode::Up, KeyCode::Left, KeyCode::Down, KeyCode::Down],
+            );
+
+            st.apply(Event::Created("a/one.req.toml".into()), Instant::now());
+            app.update(Msg::Snapshot(st.snapshot()), Duration::ZERO)
+                .unwrap();
+            let text = screen(&render(&mut app, 160, 40, Duration::ZERO));
+
+            assert!(text.contains("One"), "expanded:\n{text}");
+            assert_eq!(sends(&mut app), vec![UiCommand::Send(RequestId::new(1))]);
+        }
+
+        #[test]
+        fn the_selection_follows_its_id_across_a_reload() {
+            let mut ids = pawsman_model::Ids::default();
+            let build = |extra: &[(&str, &str)], ids: &mut pawsman_model::Ids| {
+                let files = TREE
+                    .iter()
+                    .chain(extra)
+                    .chain(&[("pawsman.toml", "format = 1\nname = \"Demo\"\n")])
+                    .map(|(n, t)| {
+                        pawsman_model::SourceFile::new(PathBuf::from(n), t.as_bytes().to_vec())
+                    })
+                    .collect();
+                Collection::build(Path::new("/demo"), files, ids)
+            };
+            let mut st = AppState::new(
+                build(&[], &mut ids),
+                pawsman_core::resolve::Context::default(),
+            );
+            let mut app = app_with(&mut st);
+            keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
+
+            st.apply(
+                Event::Reloaded(Box::new(build(
+                    &[("a/aaa.req.toml", "name = \"Aaa\"\nurl = \"u\"\n")],
+                    &mut ids,
+                ))),
+                Instant::now(),
+            );
+            app.update(Msg::Snapshot(st.snapshot()), Duration::ZERO)
+                .unwrap();
+
+            assert_eq!(
+                sends(&mut app),
+                vec![UiCommand::Send(RequestId::new(2))],
+                "still two"
+            );
+        }
+
+        #[test]
+        fn a_folder_shows_its_summary() {
+            let mut app = app_with(&mut state(TREE));
+            keys(&mut app, &[KeyCode::Up]);
+
+            let text = screen(&render(&mut app, 160, 40, Duration::ZERO));
+
+            assert!(
+                text.contains("folder Alpha") && text.contains("1 request"),
+                "{text}"
+            );
+        }
+
+        #[test]
+        fn snapshot_160x40_tree_collapsed() {
+            let mut app = app_with(&mut state(TREE));
+            keys(&mut app, &[KeyCode::Up, KeyCode::Left]);
+
+            insta::assert_snapshot!(render(&mut app, 160, 40, Duration::ZERO).backend());
+        }
+
+        #[test]
+        fn snapshot_80x24_prompt() {
+            let mut app = app_with(&mut state(TREE));
+            press(&mut app, [char_key('r')]);
+
+            insta::assert_snapshot!(render(&mut app, 80, 24, Duration::ZERO).backend());
+        }
+
+        #[test]
+        fn snapshot_80x24_ask() {
+            let mut app = app_with(&mut state(TREE));
+            keys(&mut app, &[KeyCode::Up]);
+            press(&mut app, [char_key('d')]);
+
+            insta::assert_snapshot!(render(&mut app, 80, 24, Duration::ZERO).backend());
         }
 
         #[test]
