@@ -158,6 +158,8 @@ pub struct AppState {
     collection: Option<Arc<Collection>>,
     load_error: Option<ModelError>,
     active_env: Option<String>,
+    /// The environment that broke on a reload, active again once it is fixed.
+    lost_env: Option<String>,
     context: Arc<Context>,
     statuses: BTreeMap<RequestId, RequestStatus>,
     notices: Vec<Notice>,
@@ -181,6 +183,7 @@ impl AppState {
             collection,
             load_error,
             active_env: None,
+            lost_env: None,
             context: Arc::new(context),
             statuses: BTreeMap::new(),
             notices,
@@ -196,6 +199,7 @@ impl AppState {
             collection: None,
             load_error: None,
             active_env: None,
+            lost_env: None,
             context: Arc::new(Context::default()),
             statuses: BTreeMap::new(),
             notices: Vec::new(),
@@ -306,10 +310,21 @@ impl AppState {
                 .any(|e| e.name() == name && e.error().is_none());
             if !usable {
                 self.notices.push(Notice::warn(format!(
-                    "environment `{name}` is gone or broken; none is active"
+                    "environment `{name}` is gone or broken; none is active until it is fixed"
                 )));
                 self.active_env = None;
+                self.lost_env = Some(name);
             }
+        } else if let Some(name) = self.lost_env.clone()
+            && collection
+                .environments()
+                .iter()
+                .any(|e| e.name() == name && e.error().is_none())
+        {
+            self.notices
+                .push(Notice::info(format!("environment `{name}` is back")));
+            self.active_env = Some(name);
+            self.lost_env = None;
         }
         self.collection = Some(Arc::new(collection));
         self.load_error = None;
@@ -340,6 +355,7 @@ impl AppState {
             "environment selected"
         );
         self.active_env = env;
+        self.lost_env = None;
         self.generation += 1;
     }
 
@@ -741,7 +757,7 @@ mod tests {
     fn picking_another_env_forgets_the_broken_one() {
         let mut s = AppState::new(Ok(collection(ENVS)), Context::default());
         s.apply(Event::SelectEnv(Some("dev".into())), now());
-        let broken = [ENVS[0], ("envs/dev.env.toml", "vars = 1\n")];
+        let broken = [ENVS[0], ("envs/dev.env.toml", "vars = 1\n"), ENVS[2]];
         s.apply(Event::Reloaded(Box::new(Ok(collection(&broken)))), now());
 
         s.apply(Event::SelectEnv(Some("prod".into())), now());

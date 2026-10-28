@@ -300,6 +300,20 @@ fn confined(rel: &Path) -> bool {
     rel.components().all(|c| matches!(c, Component::Normal(_)))
 }
 
+/// Confined, and no directory on the way under `root` is a symlink, so a write cannot be
+/// redirected out of the collection.
+fn writable(root: &Path, rel: &Path) -> bool {
+    confined(rel)
+        && rel
+            .ancestors()
+            .skip(1)
+            .filter(|dir| !dir.as_os_str().is_empty())
+            .all(|dir| {
+                std::fs::symlink_metadata(root.join(dir))
+                    .map_or(true, |m| !m.file_type().is_symlink())
+            })
+}
+
 /// Writes `bytes` to `rel` under `root` atomically: a temp file in the same directory, synced, then
 /// renamed over the target. The target's permissions are kept; a new file gets `0644` on Unix.
 ///
@@ -307,7 +321,7 @@ fn confined(rel: &Path) -> bool {
 ///
 /// `core::write` when `rel` leaves the collection, or the directory or file cannot be written.
 pub fn write(root: &Path, rel: &Path, bytes: &[u8]) -> Result<(), CoreError> {
-    if !confined(rel) || rel.as_os_str().is_empty() {
+    if !writable(root, rel) || rel.as_os_str().is_empty() {
         return Err(CoreError::write(
             rel,
             &std::io::Error::other("the path leaves the collection"),
@@ -354,7 +368,7 @@ pub fn apply(root: &Path, changes: &[Change]) -> Result<Vec<PathBuf>, CoreError>
         match change {
             Change::Write { path, bytes } => write(root, path, bytes)?,
             Change::Rename { from, to } => {
-                if !confined(from) || !confined(to) {
+                if !writable(root, from) || !writable(root, to) {
                     return Err(CoreError::write(
                         to,
                         &std::io::Error::other("the path leaves the collection"),
@@ -370,7 +384,7 @@ pub fn apply(root: &Path, changes: &[Change]) -> Result<Vec<PathBuf>, CoreError>
                 std::fs::rename(root.join(from), &target).map_err(|e| CoreError::write(to, &e))?;
             }
             Change::Remove(path) => {
-                if !confined(path) {
+                if !writable(root, path) {
                     continue;
                 }
                 match std::fs::remove_file(root.join(path)) {
@@ -381,7 +395,7 @@ pub fn apply(root: &Path, changes: &[Change]) -> Result<Vec<PathBuf>, CoreError>
                 }
             }
             Change::RemoveDirIfEmpty(path) => {
-                if !confined(path) || path.as_os_str().is_empty() {
+                if !writable(root, path) || path.as_os_str().is_empty() {
                     continue;
                 }
                 let full = root.join(path);

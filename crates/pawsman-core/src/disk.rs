@@ -10,7 +10,7 @@ use tracing::{info, warn};
 
 use crate::notice::Notice;
 use crate::store::{self, Files};
-use crate::tree::{self, Change, Op};
+use crate::tree::{self, Change, NodeRef, Op};
 use crate::watch::Watcher;
 
 /// The collection directory as the engine holds it.
@@ -102,6 +102,13 @@ impl Disk {
 
     /// Plans and runs `op`; `None` when it changes nothing.
     pub(crate) fn run(&mut self, collection: &Collection, op: &Op) -> Option<Done> {
+        // An edit the watcher has not reported yet must not be overwritten from a stale cache.
+        let reads = reads(collection, op);
+        let fresh = self.files.refresh(&reads).changed.then(|| self.rebuild());
+        let collection = match &fresh {
+            Some(Ok(fresh)) => fresh,
+            _ => collection,
+        };
         let plan = match tree::plan(collection, &self.files, op) {
             Ok(plan) if plan.changes.is_empty() => return None,
             Ok(plan) => plan,
@@ -179,6 +186,28 @@ impl Disk {
         }
     }
 }
+
+/// The files a plan for `op` reads: the node's own file and the `_folder.toml` files whose
+/// `name` or `order` it may rewrite.
+fn reads(collection: &Collection, op: &Op) -> Vec<PathBuf> {
+    let node = match op {
+        Op::Rename { node, .. } | Op::Delete(node) | Op::Move { node, .. } => node,
+        Op::NewRequest { .. } | Op::NewFolder { .. } => return Vec::new(),
+    };
+    match node {
+        NodeRef::Request(id) => collection
+            .entry(*id)
+            .map(|e| vec![e.path().to_owned(), e.folder().join(FOLDER_FILE)])
+            .unwrap_or_default(),
+        NodeRef::Folder(dir) => vec![
+            dir.join(FOLDER_FILE),
+            dir.parent()
+                .map_or_else(|| PathBuf::from(FOLDER_FILE), |p| p.join(FOLDER_FILE)),
+        ],
+    }
+}
+
+const FOLDER_FILE: &str = "_folder.toml";
 
 /// A short name of the operation for the log; names and contents stay out of it.
 fn kind(op: &Op) -> &'static str {
