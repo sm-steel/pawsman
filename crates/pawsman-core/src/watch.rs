@@ -3,16 +3,24 @@
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
+use std::time::{Duration, Instant};
+
+use notify::event::{AccessKind, AccessMode};
+use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
+use tracing::{debug, warn};
 
 use crate::CoreError;
+use crate::store::relevant;
 
 /// A batch closes after this long without an event.
-const QUIET: std::time::Duration = std::time::Duration::from_millis(100);
+const QUIET: Duration = Duration::from_millis(100);
 /// A batch never stays open longer than this.
-const LONGEST: std::time::Duration = std::time::Duration::from_secs(1);
+const LONGEST: Duration = Duration::from_secs(1);
 
 /// The running watcher; dropping it stops watching.
 pub struct Watcher {
+    inner: RecommendedWatcher,
     root: PathBuf,
     watched: BTreeSet<PathBuf>,
 }
@@ -28,16 +36,89 @@ impl Watcher {
         root: &Path,
         sink: impl Fn(Vec<PathBuf>) + Send + 'static,
     ) -> Result<Self, CoreError> {
-        let _ = sink;
+        let root = root.canonicalize().unwrap_or_else(|_| root.to_owned());
+        let (tx, rx) = channel();
+        let inner = notify::recommended_watcher(tx).map_err(|e| CoreError::watch(&e))?;
+        let prefix = root.clone();
+        // The thread ends when `inner` is dropped and closes the channel.
+        std::thread::Builder::new()
+            .name("pawsman-watch".into())
+            .spawn(move || debounce(&prefix, &rx, &sink))
+            .map_err(|e| CoreError::watch(&notify::Error::io(e)))?;
         Ok(Self {
-            root: root.to_owned(),
+            inner,
+            root,
             watched: BTreeSet::new(),
         })
     }
 
     /// Watches each of `dirs` (relative) and stops watching the ones no longer listed.
     pub fn sync(&mut self, dirs: &BTreeSet<PathBuf>) {
-        let _ = (&self.root, &mut self.watched, dirs);
+        let gone: Vec<PathBuf> = self.watched.difference(dirs).cloned().collect();
+        for dir in gone {
+            let _ = self.inner.unwatch(&self.root.join(&dir));
+            self.watched.remove(&dir);
+        }
+        for dir in dirs.difference(&self.watched.clone()) {
+            match self
+                .inner
+                .watch(&self.root.join(dir), RecursiveMode::NonRecursive)
+            {
+                Ok(()) => {
+                    self.watched.insert(dir.clone());
+                }
+                Err(err) => warn!(dir = %dir.display(), %err, "watch failed"),
+            }
+        }
+    }
+}
+
+/// Collects events into batches: open on the first event, close after [`QUIET`] without one or
+/// [`LONGEST`] in all.
+fn debounce(root: &Path, rx: &Receiver<notify::Result<Event>>, sink: &impl Fn(Vec<PathBuf>)) {
+    while let Ok(first) = rx.recv() {
+        let mut batch = BTreeSet::new();
+        collect(root, first, &mut batch);
+        let opened = Instant::now();
+        let mut open = true;
+        while open {
+            let left = LONGEST.saturating_sub(opened.elapsed());
+            match rx.recv_timeout(QUIET.min(left)) {
+                Ok(event) => collect(root, event, &mut batch),
+                Err(RecvTimeoutError::Timeout) => open = false,
+                Err(RecvTimeoutError::Disconnected) => return,
+            }
+            open &= !left.is_zero();
+        }
+        if !batch.is_empty() {
+            let paths: Vec<PathBuf> = batch.into_iter().collect();
+            debug!(paths = paths.len(), "files changed");
+            sink(paths);
+        }
+    }
+}
+
+/// Adds the relevant, relative paths of `event` to `batch`; reads and opens are not changes.
+fn collect(root: &Path, event: notify::Result<Event>, batch: &mut BTreeSet<PathBuf>) {
+    let event = match event {
+        Ok(event) => event,
+        Err(err) => {
+            warn!(%err, "watch event failed");
+            return;
+        }
+    };
+    if let EventKind::Access(kind) = event.kind
+        && kind != AccessKind::Close(AccessMode::Write)
+    {
+        return;
+    }
+    for path in event.paths {
+        let Ok(rel) = path.strip_prefix(root) else {
+            continue;
+        };
+        if !rel.as_os_str().is_empty() && relevant(rel) {
+            batch.insert(rel.to_owned());
+        }
     }
 }
 

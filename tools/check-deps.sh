@@ -21,12 +21,12 @@ forbid() { # forbid <package> <crate>...
 
 forbid pawsman-error serde tokio
 ui=(ratatui ratatui-core ratatui-widgets crossterm tachyonfx ratatui-image)
-forbid pawsman-model tokio hyper rustls reqwest rhai "${ui[@]}"
+forbid pawsman-model tokio hyper rustls reqwest rhai notify "${ui[@]}"
 forbid pawsman-script tokio reqwest "${ui[@]}"
 forbid pawsman-import tokio reqwest rhai "${ui[@]}"
 # core reaches tokio only through pawsman-net (ARCHITECTURE §1); deny.toml wrappers keep it out of core itself.
 forbid pawsman-core reqwest "${ui[@]}"
-forbid pawsman-net rhai "${ui[@]}"
+forbid pawsman-net rhai notify "${ui[@]}"
 # The TUI and the CLI reach tokio through core and net; deny.toml wrappers keep it out of their code.
 forbid pawsman-tui reqwest rhai
 forbid pawsman-cli reqwest

@@ -17,6 +17,8 @@ pub const WRITE: ErrorCode = ErrorCode::new("core::write");
 pub const READ: ErrorCode = ErrorCode::new("core::read");
 /// The target of a create or rename already exists.
 pub const EXISTS: ErrorCode = ErrorCode::new("core::exists");
+/// The file watcher cannot start.
+pub const WATCH: ErrorCode = ErrorCode::new("core::watch");
 
 /// Every code, for the registry test.
 pub const ALL: &[ErrorCode] = &[
@@ -27,6 +29,7 @@ pub const ALL: &[ErrorCode] = &[
     WRITE,
     READ,
     EXISTS,
+    WATCH,
 ];
 
 #[cfg(test)]

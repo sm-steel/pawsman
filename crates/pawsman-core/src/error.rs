@@ -24,6 +24,7 @@ enum Kind {
     Write { path: PathBuf, reason: String },
     Read { path: PathBuf, reason: String },
     Exists { path: PathBuf },
+    Watch { reason: String },
 }
 
 impl CoreError {
@@ -75,6 +76,14 @@ impl CoreError {
         }
     }
 
+    pub(crate) fn watch(err: &notify::Error) -> Self {
+        Self {
+            kind: Kind::Watch {
+                reason: err.to_string(),
+            },
+        }
+    }
+
     pub(crate) fn settings_invalid(path: &Path, reason: impl Into<String>) -> Self {
         Self {
             kind: Kind::SettingsInvalid {
@@ -103,6 +112,9 @@ impl fmt::Display for CoreError {
                 write!(f, "`{}` cannot be read: {reason}", path.display())
             }
             Kind::Exists { path } => write!(f, "`{}` already exists", path.display()),
+            Kind::Watch { reason } => {
+                write!(f, "edits made outside pawsman are not watched: {reason}")
+            }
             Kind::SettingsInvalid { path, reason } | Kind::GlobalsInvalid { path, reason } => {
                 write!(f, "`{}` is not valid: {reason}", path.display())
             }
@@ -122,6 +134,7 @@ impl ErrorInfo for CoreError {
             Kind::Write { .. } => codes::WRITE,
             Kind::Read { .. } => codes::READ,
             Kind::Exists { .. } => codes::EXISTS,
+            Kind::Watch { .. } => codes::WATCH,
         }
     }
 
@@ -138,6 +151,7 @@ impl ErrorInfo for CoreError {
             Kind::Write { .. } => "Check the folder's permissions and free space, then retry.",
             Kind::Read { .. } => "Check the file's permissions, then save it again.",
             Kind::Exists { .. } => "Pick another name, or move the other file away first.",
+            Kind::Watch { .. } => "Press Ctrl-R to reload after editing files elsewhere.",
         }))
     }
 
