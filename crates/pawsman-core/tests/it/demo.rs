@@ -75,3 +75,20 @@ fn every_demo_request_but_two_resolves_in_dev() {
         "the broken file and the unresolved variable, nothing else"
     );
 }
+
+#[test]
+fn the_root_order_puts_me_first() {
+    let c = demo();
+
+    let keys: Vec<String> = c
+        .root_folder()
+        .children()
+        .iter()
+        .map(|n| match n {
+            pawsman_model::Node::Folder(f) => f.path().display().to_string(),
+            pawsman_model::Node::Entry(id) => c.entry(*id).unwrap().stem().to_owned(),
+        })
+        .collect();
+
+    assert_eq!(keys, ["me", "users", "misc", "template"]);
+}
