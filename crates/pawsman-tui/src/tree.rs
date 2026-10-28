@@ -2,10 +2,10 @@
 //! cursor moves over them.
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use pawsman_core::tree::NodeRef;
-use pawsman_model::Collection;
+use pawsman_model::{Collection, Folder, Node};
 
 /// One visible row.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,8 +18,73 @@ pub(crate) struct Row {
 
 /// The visible rows in display order; a collapsed folder shows, its children do not.
 pub(crate) fn rows(collection: &Collection, collapsed: &BTreeSet<PathBuf>) -> Vec<Row> {
-    let _ = (collection, collapsed);
-    Vec::new()
+    let mut rows = Vec::new();
+    push(collection.root_folder(), 0, collapsed, &mut rows);
+    rows
+}
+
+fn push(folder: &Folder, depth: usize, collapsed: &BTreeSet<PathBuf>, rows: &mut Vec<Row>) {
+    for node in folder.children() {
+        match node {
+            Node::Folder(child) => {
+                rows.push(Row {
+                    node: NodeRef::Folder(child.path().to_owned()),
+                    depth,
+                });
+                if !collapsed.contains(child.path()) {
+                    push(child, depth + 1, collapsed, rows);
+                }
+            }
+            Node::Entry(id) => rows.push(Row {
+                node: NodeRef::Request(*id),
+                depth,
+            }),
+        }
+    }
+}
+
+/// The folder at `path`; the root is the empty path.
+pub(crate) fn folder<'a>(collection: &'a Collection, path: &Path) -> Option<&'a Folder> {
+    let mut current = collection.root_folder();
+    for part in path.components() {
+        let prefix = current.path().join(part);
+        current = current.children().iter().find_map(|n| match n {
+            Node::Folder(f) if f.path() == prefix => Some(&**f),
+            _ => None,
+        })?;
+    }
+    Some(current)
+}
+
+/// The node at a path a tree operation reported: a request file or a folder directory.
+pub(crate) fn node_at(collection: &Collection, path: &Path) -> Option<NodeRef> {
+    if let Some(entry) = collection.entries().iter().find(|e| e.path() == path) {
+        return Some(NodeRef::Request(entry.id()));
+    }
+    folder(collection, path).map(|f| NodeRef::Folder(f.path().to_owned()))
+}
+
+/// The folder holding `node`; the root holds the top level.
+pub(crate) fn parent(collection: &Collection, node: &NodeRef) -> PathBuf {
+    match node {
+        NodeRef::Request(id) => collection
+            .entry(*id)
+            .map(|e| e.folder().to_owned())
+            .unwrap_or_default(),
+        NodeRef::Folder(path) => path.parent().map(Path::to_owned).unwrap_or_default(),
+    }
+}
+
+/// The requests in a folder and every folder below it.
+pub(crate) fn count(folder: &Folder) -> usize {
+    folder
+        .children()
+        .iter()
+        .map(|n| match n {
+            Node::Folder(f) => count(f),
+            Node::Entry(_) => 1,
+        })
+        .sum()
 }
 
 #[cfg(test)]
@@ -69,9 +134,9 @@ mod tests {
             rows,
             [
                 folder("a", 0),
+                request(1, 1),
                 folder("a/sub", 1),
-                request(1, 2),
-                request(2, 1),
+                request(2, 2),
                 request(3, 0)
             ]
         );
@@ -87,8 +152,8 @@ mod tests {
             rows,
             [
                 folder("a", 0),
+                request(1, 1),
                 folder("a/sub", 1),
-                request(2, 1),
                 request(3, 0)
             ]
         );

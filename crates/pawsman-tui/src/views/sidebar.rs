@@ -1,7 +1,11 @@
 //! The request list: the active environment, then the folder tree.
 
+use std::collections::BTreeSet;
+use std::path::PathBuf;
+
 use pawsman_core::state::Snapshot;
-use pawsman_model::{Collection, EntryKind, Folder, Node, RequestId};
+use pawsman_core::tree::NodeRef;
+use pawsman_model::{Collection, EntryKind};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -10,6 +14,7 @@ use ratatui::widgets::Paragraph;
 
 use super::main::ACCENT;
 use super::response::sanitize;
+use crate::tree::{self, Row};
 
 const DIM: Color = Color::Rgb(110, 110, 135);
 
@@ -25,12 +30,15 @@ pub(crate) fn method_color(method: &str) -> Color {
     }
 }
 
-/// Draws the environment row and one row per folder and request, the selected one reversed.
+/// Draws the environment row and the visible tree rows, the selected one reversed and kept in
+/// view.
 pub(crate) fn draw(
     frame: &mut Frame,
     area: Rect,
     snapshot: &Snapshot,
-    selected: Option<RequestId>,
+    rows: &[Row],
+    selected: Option<&NodeRef>,
+    collapsed: &BTreeSet<PathBuf>,
 ) {
     let Some(collection) = snapshot.collection() else {
         return;
@@ -40,66 +48,64 @@ pub(crate) fn draw(
         Span::styled("env: ", Style::new().fg(DIM)),
         Span::styled(sanitize(env), Style::new().fg(ACCENT)),
     ])];
-    rows(
-        collection,
-        collection.root_folder(),
-        0,
-        selected,
-        &mut lines,
-    );
+    let room = usize::from(area.height.saturating_sub(1)).max(1);
+    let at = rows
+        .iter()
+        .position(|r| Some(&r.node) == selected)
+        .unwrap_or(0);
+    let first = at.saturating_sub(room - 1);
+    for row in rows.iter().skip(first).take(room) {
+        let mut line = row_line(collection, row, collapsed);
+        if Some(&row.node) == selected {
+            line = line.style(Style::new().add_modifier(Modifier::REVERSED));
+        }
+        lines.push(line);
+    }
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-fn rows(
-    collection: &Collection,
-    folder: &Folder,
-    depth: usize,
-    selected: Option<RequestId>,
-    lines: &mut Vec<Line<'static>>,
-) {
-    let indent = "  ".repeat(depth);
-    for node in folder.children() {
-        match node {
-            Node::Folder(child) => {
-                let (mark, colour) = if child.error().is_some() {
-                    ("! ", Color::LightRed)
-                } else {
-                    ("▾ ", DIM)
-                };
-                lines.push(Line::styled(
-                    format!("{indent}{mark}{}", sanitize(child.name())),
-                    Style::new().fg(colour),
-                ));
-                rows(collection, child, depth + 1, selected, lines);
-            }
-            Node::Entry(id) => {
-                let Some(entry) = collection.entry(*id) else {
-                    continue;
-                };
-                let mut line = if let EntryKind::Request(r) = entry.kind() {
-                    Line::from(vec![
-                        Span::raw(indent.clone()),
-                        Span::styled(
-                            format!("{:<7}", r.method()),
-                            Style::new().fg(method_color(r.method())),
-                        ),
-                        Span::raw(sanitize(r.name())),
-                    ])
-                } else {
-                    let file = entry
-                        .path()
-                        .file_name()
-                        .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
-                    Line::from(vec![
-                        Span::raw(indent.clone()),
-                        Span::styled("!      ", Style::new().fg(Color::LightRed)),
-                        Span::styled(sanitize(&file), Style::new().fg(Color::LightRed)),
-                    ])
-                };
-                if Some(*id) == selected {
-                    line = line.style(Style::new().add_modifier(Modifier::REVERSED));
-                }
-                lines.push(line);
+fn row_line(collection: &Collection, row: &Row, collapsed: &BTreeSet<PathBuf>) -> Line<'static> {
+    let indent = "  ".repeat(row.depth);
+    match &row.node {
+        NodeRef::Folder(path) => {
+            let Some(folder) = tree::folder(collection, path) else {
+                return Line::default();
+            };
+            let (mark, colour) = if folder.error().is_some() {
+                ("! ", Color::LightRed)
+            } else if collapsed.contains(path) {
+                ("▸ ", DIM)
+            } else {
+                ("▾ ", DIM)
+            };
+            Line::styled(
+                format!("{indent}{mark}{}", sanitize(folder.name())),
+                Style::new().fg(colour),
+            )
+        }
+        NodeRef::Request(id) => {
+            let Some(entry) = collection.entry(*id) else {
+                return Line::default();
+            };
+            if let EntryKind::Request(r) = entry.kind() {
+                Line::from(vec![
+                    Span::raw(indent),
+                    Span::styled(
+                        format!("{:<7}", r.method()),
+                        Style::new().fg(method_color(r.method())),
+                    ),
+                    Span::raw(sanitize(r.name())),
+                ])
+            } else {
+                let file = entry
+                    .path()
+                    .file_name()
+                    .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+                Line::from(vec![
+                    Span::raw(indent),
+                    Span::styled("!      ", Style::new().fg(Color::LightRed)),
+                    Span::styled(sanitize(&file), Style::new().fg(Color::LightRed)),
+                ])
             }
         }
     }

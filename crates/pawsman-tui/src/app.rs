@@ -1,28 +1,31 @@
 //! The main loop and its state.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::io::BufWriter;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use pawsman_core::engine::Engine;
-use pawsman_core::keys::{Action, Context, Keymap};
+use pawsman_core::keys::{Action, Context, KeyCode, Keymap, Mods};
 use pawsman_core::notice::Notice;
 use pawsman_core::resolve::Preview;
 use pawsman_core::state::Snapshot;
-use pawsman_core::tree::Op;
+use pawsman_core::tree::{Direction, NodeRef, Op};
 use pawsman_model::RequestId;
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::{Frame, Terminal};
+use unicode_segmentation::UnicodeSegmentation as _;
 
 use crate::input::MouseKind;
 use crate::input::{Input, Reader};
 use crate::term::{Caps, InTmux, Term, probe};
+use crate::tree::{self, Row};
 use crate::views::main::{self, Focus, MainView, TraceView};
 use crate::views::picker::{self, Item};
 use crate::views::splash::{self, Splash};
-use crate::views::{colors, help, home};
+use crate::views::{ask, colors, help, home, prompt};
 use crate::{Options, TuiError};
 
 /// Everything the main loop reacts to.
@@ -98,14 +101,44 @@ const SENDING_TICK: Duration = Duration::from_millis(100);
 /// Lines a page key scrolls.
 const PAGE: u16 = 10;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Overlay {
     None,
     /// The help overlay, scrolled by this many rows.
     Help(u16),
     /// The environment picker, its highlighted row.
     Picker(usize),
+    /// A name being typed.
+    Prompt(Prompt),
+    /// A yes or no question before an operation.
+    Ask(Ask),
 }
+
+/// A one-line text field in a box.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Prompt {
+    title: String,
+    text: String,
+    purpose: PromptFor,
+}
+
+/// What a prompt's text becomes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PromptFor {
+    NewRequest(PathBuf),
+    NewFolder(PathBuf),
+    Rename(NodeRef),
+}
+
+/// A question; yes runs `op`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Ask {
+    text: String,
+    op: Op,
+}
+
+/// The longest name a prompt takes, in characters.
+const PROMPT_MAX: usize = 200;
 
 /// The selected request's preview, for one snapshot generation.
 type PreviewCache = Option<(u64, RequestId, Option<Result<Preview, Notice>>)>;
@@ -119,7 +152,8 @@ pub(crate) struct App {
     /// The current notice and when it expires, set when it is first drawn.
     shown: Option<(Notice, Duration)>,
     snapshot: Option<Arc<Snapshot>>,
-    selected: Option<RequestId>,
+    selected: Option<NodeRef>,
+    collapsed: BTreeSet<PathBuf>,
     focus: Focus,
     scroll: u16,
     trace: TraceView,
@@ -142,6 +176,7 @@ impl App {
             shown: None,
             snapshot: None,
             selected: None,
+            collapsed: BTreeSet::new(),
             focus: Focus::Sidebar,
             scroll: 0,
             trace: TraceView::Hidden,
@@ -180,58 +215,289 @@ impl App {
         if fresh_error && let Some(err) = snapshot.load_error() {
             self.notices.push_back(Notice::from_error(err));
         }
-        if self.selected.is_none() {
-            self.selected = snapshot
-                .collection()
-                .and_then(|c| c.entries().first())
-                .map(pawsman_model::Entry::id);
-        }
+        let old_at = self
+            .rows()
+            .iter()
+            .position(|r| Some(&r.node) == self.selected.as_ref());
         self.snapshot = Some(snapshot);
+        if let Some(node) = self.created() {
+            self.reveal(&node);
+            self.selected = Some(node);
+        }
+        let rows = self.rows();
+        let present = rows.iter().any(|r| Some(&r.node) == self.selected.as_ref());
+        if !present {
+            self.selected = match old_at {
+                Some(at) => rows.get(at.min(rows.len().saturating_sub(1))),
+                None => rows
+                    .iter()
+                    .find(|r| matches!(r.node, NodeRef::Request(_)))
+                    .or_else(|| rows.first()),
+            }
+            .map(|r| r.node.clone());
+        }
         if matches!(self.screen, Screen::Home) {
             self.screen = self.landing();
         }
     }
 
-    /// Moves the selection by `step` entries, clamped to the list.
-    fn select(&mut self, step: isize) {
-        let Some(entries) = self
-            .snapshot
-            .as_ref()
-            .and_then(|s| s.collection())
-            .map(pawsman_model::Collection::entries)
-        else {
+    /// The node a tree operation just created or renamed, from the snapshot.
+    fn created(&self) -> Option<NodeRef> {
+        let snapshot = self.snapshot.as_ref()?;
+        tree::node_at(snapshot.collection()?, snapshot.created()?)
+    }
+
+    /// Opens every folder above `node`.
+    fn reveal(&mut self, node: &NodeRef) {
+        let Some(collection) = self.snapshot.as_ref().and_then(|s| s.collection()) else {
             return;
         };
-        let current = entries
+        let parent = tree::parent(collection, node);
+        for dir in parent.ancestors() {
+            self.collapsed.remove(dir);
+        }
+    }
+
+    /// The visible sidebar rows.
+    fn rows(&self) -> Vec<Row> {
+        self.snapshot
+            .as_ref()
+            .and_then(|s| s.collection())
+            .map(|c| tree::rows(c, &self.collapsed))
+            .unwrap_or_default()
+    }
+
+    /// The selected request, when a request (not a folder) is selected.
+    fn selected_id(&self) -> Option<RequestId> {
+        match self.selected {
+            Some(NodeRef::Request(id)) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// Moves the selection by `step` rows, clamped to the list.
+    fn select(&mut self, step: isize) {
+        let rows = self.rows();
+        let current = rows
             .iter()
-            .position(|e| Some(e.id()) == self.selected)
+            .position(|r| Some(&r.node) == self.selected.as_ref())
             .unwrap_or(0);
         let next = current
             .saturating_add_signed(step)
-            .min(entries.len().saturating_sub(1));
-        self.selected = entries.get(next).map(pawsman_model::Entry::id);
+            .min(rows.len().saturating_sub(1));
+        if let Some(row) = rows.get(next) {
+            self.selected = Some(row.node.clone());
+        }
         self.scroll = 0;
+    }
+
+    /// Closes an open folder, else selects the parent folder.
+    fn collapse(&mut self) {
+        let Some(node) = self.selected.clone() else {
+            return;
+        };
+        if let NodeRef::Folder(path) = &node
+            && !self.collapsed.contains(path)
+        {
+            self.collapsed.insert(path.clone());
+            return;
+        }
+        let Some(collection) = self.snapshot.as_ref().and_then(|s| s.collection()) else {
+            return;
+        };
+        let parent = tree::parent(collection, &node);
+        if !parent.as_os_str().is_empty() {
+            self.selected = Some(NodeRef::Folder(parent));
+        }
+    }
+
+    /// Opens or closes the selected folder.
+    fn toggle(&mut self, open: Option<bool>) {
+        let Some(NodeRef::Folder(path)) = &self.selected else {
+            return;
+        };
+        let open = open.unwrap_or_else(|| self.collapsed.contains(path));
+        if open {
+            self.collapsed.remove(path);
+        } else {
+            self.collapsed.insert(path.clone());
+        }
+    }
+
+    /// The display name of a node and the folder new nodes go into.
+    fn describe(&self, node: &NodeRef) -> Option<(String, PathBuf)> {
+        let collection = self.snapshot.as_ref()?.collection()?;
+        match node {
+            NodeRef::Request(id) => {
+                let entry = collection.entry(*id)?;
+                let name = collection
+                    .request(*id)
+                    .map_or_else(|| entry.stem().to_owned(), |r| r.name().to_owned());
+                Some((name, entry.folder().to_owned()))
+            }
+            NodeRef::Folder(path) => {
+                let folder = tree::folder(collection, path)?;
+                Some((folder.name().to_owned(), path.clone()))
+            }
+        }
+    }
+
+    /// The folder a new node goes into: the selected folder, or the selected request's folder.
+    fn target_folder(&self) -> (String, PathBuf) {
+        let collection = self.snapshot.as_ref().and_then(|s| s.collection());
+        let path = self
+            .selected
+            .as_ref()
+            .and_then(|n| self.describe(n))
+            .map(|(_, p)| p)
+            .unwrap_or_default();
+        let name = collection
+            .and_then(|c| tree::folder(c, &path))
+            .map(|f| f.name().to_owned())
+            .unwrap_or_default();
+        (name, path)
+    }
+
+    fn tree_action(&mut self, action: Action) {
+        let node = self.selected.clone();
+        match action {
+            Action::NewRequest | Action::NewFolder => {
+                let (name, parent) = self.target_folder();
+                let (title, purpose) = if action == Action::NewRequest {
+                    (
+                        format!("New request in {name}"),
+                        PromptFor::NewRequest(parent),
+                    )
+                } else {
+                    (
+                        format!("New folder in {name}"),
+                        PromptFor::NewFolder(parent),
+                    )
+                };
+                self.overlay = Overlay::Prompt(Prompt {
+                    title,
+                    text: String::new(),
+                    purpose,
+                });
+            }
+            Action::Rename => {
+                let Some(node) = node else {
+                    return;
+                };
+                let Some((name, _)) = self.describe(&node) else {
+                    return;
+                };
+                self.overlay = Overlay::Prompt(Prompt {
+                    title: format!("Rename {name}"),
+                    text: name,
+                    purpose: PromptFor::Rename(node),
+                });
+            }
+            Action::Delete => {
+                let Some(node) = node else {
+                    return;
+                };
+                let Some((name, _)) = self.describe(&node) else {
+                    return;
+                };
+                let text = match &node {
+                    NodeRef::Request(_) => format!("Delete request {name}?"),
+                    NodeRef::Folder(path) => {
+                        let n = self
+                            .snapshot
+                            .as_ref()
+                            .and_then(|s| s.collection())
+                            .and_then(|c| tree::folder(c, path))
+                            .map_or(0, tree::count);
+                        let noun = if n == 1 { "request" } else { "requests" };
+                        format!("Delete folder {name} and its {n} {noun}?")
+                    }
+                };
+                self.overlay = Overlay::Ask(Ask {
+                    text,
+                    op: Op::Delete(node),
+                });
+            }
+            Action::MoveUp | Action::MoveDown => {
+                let dir = if action == Action::MoveUp {
+                    Direction::Up
+                } else {
+                    Direction::Down
+                };
+                if let Some(node) = node {
+                    self.commands.push(UiCommand::Op(Op::Move { node, dir }));
+                }
+            }
+            Action::Reload => self.commands.push(UiCommand::Reload),
+            Action::Expand => self.toggle(Some(true)),
+            Action::Collapse => self.collapse(),
+            Action::Confirm => self.toggle(None),
+            _ => {}
+        }
+    }
+
+    fn prompt_action(&mut self, action: Action, prompt: Prompt) {
+        if action != Action::Confirm {
+            return;
+        }
+        let name = prompt.text.trim().to_owned();
+        if name.is_empty() {
+            return;
+        }
+        let op = match prompt.purpose {
+            PromptFor::NewRequest(parent) => Op::NewRequest { parent, name },
+            PromptFor::NewFolder(parent) => Op::NewFolder { parent, name },
+            PromptFor::Rename(node) => Op::Rename { node, name },
+        };
+        self.commands.push(UiCommand::Op(op));
+        self.overlay = Overlay::None;
+    }
+
+    /// Typing into the prompt: characters, Backspace, paste. `false` when `input` is not text.
+    fn type_into_prompt(&mut self, input: &Input) -> bool {
+        let Overlay::Prompt(prompt) = &mut self.overlay else {
+            return false;
+        };
+        let text = match input {
+            Input::Key(chord)
+                if (chord.mods().is_empty() || chord.mods() == Mods::SHIFT)
+                    && let KeyCode::Char(c) = chord.code() =>
+            {
+                c.to_string()
+            }
+            Input::Key(chord) if chord.mods().is_empty() && chord.code() == KeyCode::Backspace => {
+                if let Some((at, _)) = prompt.text.grapheme_indices(true).next_back() {
+                    prompt.text.truncate(at);
+                }
+                return true;
+            }
+            Input::Paste(text) => text.chars().filter(|c| !c.is_control()).collect(),
+            _ => return false,
+        };
+        let room = PROMPT_MAX.saturating_sub(prompt.text.chars().count());
+        prompt.text.extend(text.chars().take(room));
+        true
     }
 
     fn main_action(&mut self, action: Action) {
         match action {
             Action::Send => {
-                if let Some(id) = self.selected {
+                if let Some(id) = self.selected_id() {
                     self.commands.push(UiCommand::Send(id));
                 }
             }
             Action::Cancel => {
-                let sending = self
-                    .snapshot
-                    .as_ref()
-                    .zip(self.selected)
-                    .is_some_and(|(s, id)| {
-                        matches!(
-                            s.status(id),
-                            pawsman_core::state::RequestStatus::Sending { .. }
-                        )
-                    });
-                if sending && let Some(id) = self.selected {
+                let sending =
+                    self.snapshot
+                        .as_ref()
+                        .zip(self.selected_id())
+                        .is_some_and(|(s, id)| {
+                            matches!(
+                                s.status(id),
+                                pawsman_core::state::RequestStatus::Sending { .. }
+                            )
+                        });
+                if sending && let Some(id) = self.selected_id() {
                     self.commands.push(UiCommand::Cancel(id));
                 }
             }
@@ -257,7 +523,7 @@ impl App {
                 self.overlay = Overlay::Picker(at);
             }
             Action::Trace => self.trace = self.trace.toggled(),
-            _ => {}
+            action => self.tree_action(action),
         }
     }
 
@@ -301,7 +567,7 @@ impl App {
 
     /// Recomputes the selected request's preview once per snapshot generation.
     fn refresh_preview(&mut self) {
-        let (Some(snapshot), Some(id)) = (self.snapshot.as_ref(), self.selected) else {
+        let (Some(snapshot), Some(id)) = (self.snapshot.as_ref(), self.selected_id()) else {
             return;
         };
         let generation = snapshot.generation();
@@ -319,17 +585,24 @@ impl App {
     }
 
     fn context(&self) -> Context {
-        match (&self.screen, self.overlay) {
+        match (&self.screen, &self.overlay) {
             (Screen::Splash(_), _) => Context::Splash,
             (Screen::Home | Screen::Main, Overlay::Help(_)) => Context::Help,
             (Screen::Main, Overlay::Picker(_)) => Context::Picker,
-            (Screen::Home, Overlay::None | Overlay::Picker(_)) => Context::Home,
+            (Screen::Main, Overlay::Prompt(_)) => Context::Prompt,
+            (Screen::Main, Overlay::Ask(_)) => Context::Ask,
+            (Screen::Home, _) => Context::Home,
             (Screen::Main, Overlay::None) => Context::Main,
         }
     }
 
     /// Applies one message.
     pub(crate) fn update(&mut self, msg: Msg, _now: Duration) -> Result<Flow, TuiError> {
+        if let Msg::Input(input) = &msg
+            && self.type_into_prompt(input)
+        {
+            return Ok(Flow::Continue);
+        }
         let chord = match msg {
             Msg::Terminate => return Ok(Flow::Quit),
             Msg::InputClosed => return Err(TuiError::input_closed()),
@@ -373,6 +646,14 @@ impl App {
             Some(action) if let Overlay::Picker(at) = self.overlay => {
                 self.picker_action(action, at);
             }
+            Some(action) if let Overlay::Prompt(prompt) = &self.overlay => {
+                self.prompt_action(action, prompt.clone());
+            }
+            Some(Action::Confirm) if let Overlay::Ask(ask) = &self.overlay => {
+                self.commands.push(UiCommand::Op(ask.op.clone()));
+                self.overlay = Overlay::None;
+            }
+            Some(_) if matches!(self.overlay, Overlay::Ask(_)) => {}
             Some(Action::Copy) => self.notices.push_back(Notice::info(format!(
                 "nothing selected · {} quits",
                 self.keys.label(Action::Quit).unwrap_or_default()
@@ -403,12 +684,16 @@ impl App {
             let preview = self
                 .preview
                 .as_ref()
-                .filter(|(_, id, _)| Some(*id) == self.selected)
+                .filter(|(_, id, _)| Some(*id) == self.selected_id())
                 .and_then(|(_, _, p)| p.as_ref());
+            let rows = self.rows();
             if let Some(snapshot) = &self.snapshot {
                 let view = MainView {
                     snapshot,
-                    selected: self.selected,
+                    selected: self.selected_id(),
+                    node: self.selected.as_ref(),
+                    rows: &rows,
+                    collapsed: &self.collapsed,
                     focus: self.focus,
                     scroll: self.scroll,
                     now: Instant::now(),
@@ -422,11 +707,13 @@ impl App {
         } else {
             home::draw(frame, area, notice.as_ref(), &self.caps, &self.keys);
         }
-        match self.overlay {
+        match &self.overlay {
             Overlay::Help(scroll) => {
-                self.overlay = Overlay::Help(help::draw(frame, area, &self.keys, scroll));
+                self.overlay = Overlay::Help(help::draw(frame, area, &self.keys, *scroll));
             }
-            Overlay::Picker(at) => picker::draw(frame, area, &self.picker_items(), at),
+            Overlay::Picker(at) => picker::draw(frame, area, &self.picker_items(), *at),
+            Overlay::Prompt(p) => prompt::draw(frame, area, &p.title, &p.text),
+            Overlay::Ask(a) => ask::draw(frame, area, &a.text),
             Overlay::None => {}
         }
         colors::downsample(frame.buffer_mut(), area, self.caps.color());
