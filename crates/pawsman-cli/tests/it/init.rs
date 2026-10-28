@@ -7,6 +7,10 @@
 use std::path::Path;
 use std::process::{Command, Output};
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the test runs the binary under test; init needs no PTY"
+)]
 fn init(dir: &Path) -> Output {
     Command::new(env!("CARGO_BIN_EXE_pawsman"))
         .env_clear()
