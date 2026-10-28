@@ -1,6 +1,6 @@
 //! A collection: `pawsman.toml`, a tree of folders and requests, environments and `.env`.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use secrecy::SecretString;
@@ -21,6 +21,7 @@ pub struct Collection {
     manifest: Manifest,
     tree: Folder,
     entries: Vec<Entry>,
+    index: HashMap<RequestId, usize>,
     environments: Vec<Environment>,
     dotenv: Vec<(String, SecretString)>,
     issues: Vec<ModelError>,
@@ -64,7 +65,6 @@ impl Collection {
     ///
     /// As [`Collection::from_files`].
     pub fn build(root: &Path, files: Vec<SourceFile>, ids: &mut Ids) -> Result<Self, ModelError> {
-        let _ = ids;
         let files: BTreeMap<PathBuf, Vec<u8>> =
             files.into_iter().map(SourceFile::into_parts).collect();
         let manifest_path = root.join(MANIFEST);
@@ -75,16 +75,18 @@ impl Collection {
         let requests: Vec<&Path> = files
             .keys()
             .map(PathBuf::as_path)
-            .filter(|p| is_request(p))
+            .filter(|p| is_request(p) || is_folder_file(p))
             .collect();
         let mut builder = Builder {
             files: &files,
             requests: &requests,
             format: manifest.format(),
             entries: Vec::new(),
+            ids,
         };
         let tree = builder.folder(Path::new(""), Some(manifest.name()), None);
         let entries = builder.entries;
+        let index = entries.iter().enumerate().map(|(i, e)| (e.id, i)).collect();
         let mut issues = Vec::new();
         let environments = environments(&files, &mut issues);
         let mut values = Vec::new();
@@ -103,6 +105,7 @@ impl Collection {
             manifest,
             tree,
             entries,
+            index,
             environments,
             dotenv: values,
             issues,
@@ -142,7 +145,7 @@ impl Collection {
     /// The entry with `id`.
     #[must_use]
     pub fn entry(&self, id: RequestId) -> Option<&Entry> {
-        self.entries.iter().find(|e| e.id == id)
+        self.index.get(&id).and_then(|i| self.entries.get(*i))
     }
 
     /// The request with `id`, if it parsed.
@@ -197,12 +200,14 @@ impl Collection {
     }
 }
 
-/// Walks the folder tree, numbering requests in display order.
+/// Walks the folder tree, taking request ids from `ids` in display order.
 struct Builder<'a> {
     files: &'a BTreeMap<PathBuf, Vec<u8>>,
+    /// Request files and folder files: the paths that make the tree.
     requests: &'a [&'a Path],
     format: u32,
     entries: Vec<Entry>,
+    ids: &'a mut Ids,
 }
 
 /// A folder's child before ordering.
@@ -269,7 +274,7 @@ impl Builder<'_> {
                 if folders.insert(first.clone()) {
                     found.push((first.clone(), Child::Folder(dir.join(&first))));
                 }
-            } else {
+            } else if first != FOLDER_FILE {
                 let stem = first.strip_suffix(REQUEST_EXT).unwrap_or(&first).to_owned();
                 found.push((stem, Child::Request((*path).to_owned())));
             }
@@ -280,7 +285,7 @@ impl Builder<'_> {
     }
 
     fn request(&mut self, path: &Path, dir: &Path, broken: Option<&ModelError>) -> RequestId {
-        let id = RequestId::new(u32::try_from(self.entries.len() + 1).unwrap_or(u32::MAX));
+        let id = self.ids.id(path);
         let kind = if let Some(err) = broken {
             EntryKind::Invalid(err.clone())
         } else {
@@ -308,6 +313,11 @@ fn is_request(path: &Path) -> bool {
         .and_then(|n| n.to_str())
         .is_some_and(|n| n.ends_with(REQUEST_EXT));
     named && !path.starts_with(ENVS)
+}
+
+/// `_folder.toml` anywhere but under `envs/`.
+fn is_folder_file(path: &Path) -> bool {
+    path.file_name().is_some_and(|n| n == FOLDER_FILE) && !path.starts_with(ENVS)
 }
 
 /// `envs/<name>.env.toml`, sorted by name; badly named files become issues.
@@ -375,7 +385,11 @@ impl Entry {
     /// The file name without `.req.toml`: the request's key in `order`.
     #[must_use]
     pub fn stem(&self) -> &str {
-        ""
+        self.path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.strip_suffix(REQUEST_EXT))
+            .unwrap_or_default()
     }
 
     /// The parsed request or its error.
@@ -460,8 +474,16 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(id_of(&first, "b.req.toml"), RequestId::new(1), "first build");
-        assert_eq!(id_of(&second, "b.req.toml"), RequestId::new(1), "b kept its id");
+        assert_eq!(
+            id_of(&first, "b.req.toml"),
+            RequestId::new(1),
+            "first build"
+        );
+        assert_eq!(
+            id_of(&second, "b.req.toml"),
+            RequestId::new(1),
+            "b kept its id"
+        );
         assert_eq!(id_of(&second, "a.req.toml"), RequestId::new(2), "a is new");
         assert_eq!(
             second.entry(RequestId::new(1)).unwrap().path(),
@@ -474,12 +496,20 @@ mod tests {
     fn ids_follow_a_folder_rename() {
         let mut ids = crate::Ids::default();
         let x = req("x");
-        Collection::build(Path::new("/c"), sources(&[("users/x.req.toml", &x)]), &mut ids)
-            .unwrap();
+        Collection::build(
+            Path::new("/c"),
+            sources(&[("users/x.req.toml", &x)]),
+            &mut ids,
+        )
+        .unwrap();
 
         ids.rename(Path::new("users"), Path::new("people"));
-        let c = Collection::build(Path::new("/c"), sources(&[("people/x.req.toml", &x)]), &mut ids)
-            .unwrap();
+        let c = Collection::build(
+            Path::new("/c"),
+            sources(&[("people/x.req.toml", &x)]),
+            &mut ids,
+        )
+        .unwrap();
 
         assert_eq!(id_of(&c, "people/x.req.toml"), RequestId::new(1), "same id");
     }

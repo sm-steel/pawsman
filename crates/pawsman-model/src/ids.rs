@@ -15,18 +15,38 @@ pub struct Ids {
 impl Ids {
     /// The id of `path`, or the next unused one.
     pub fn id(&mut self, path: &Path) -> RequestId {
-        let _ = (self, path);
-        RequestId::new(0)
+        if let Some(id) = self.by_path.get(path) {
+            return *id;
+        }
+        self.last = self.last.saturating_add(1);
+        let id = RequestId::new(self.last);
+        self.by_path.insert(path.to_owned(), id);
+        id
     }
 
     /// Moves `from`, and every path under it, to the same place under `to`.
     pub fn rename(&mut self, from: &Path, to: &Path) {
-        let _ = (self, from, to);
+        let moved: Vec<PathBuf> = self
+            .by_path
+            .keys()
+            .filter(|p| p.starts_with(from))
+            .cloned()
+            .collect();
+        for old in moved {
+            let Some(id) = self.by_path.remove(&old) else {
+                continue;
+            };
+            let new = match old.strip_prefix(from) {
+                Ok(rest) if !rest.as_os_str().is_empty() => to.join(rest),
+                _ => to.to_owned(),
+            };
+            self.by_path.insert(new, id);
+        }
     }
 
     /// Forgets the paths for which `live` is false.
     pub fn retain(&mut self, live: impl Fn(&Path) -> bool) {
-        let _ = (self, live);
+        self.by_path.retain(|path, _| live(path));
     }
 }
 
