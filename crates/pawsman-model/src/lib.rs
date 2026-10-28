@@ -7,6 +7,7 @@ pub mod dotenv;
 mod environment;
 mod error;
 mod folder;
+mod ids;
 pub mod format;
 mod interpolate;
 mod manifest;
@@ -23,6 +24,7 @@ pub use collection::{Collection, Entry, EntryKind};
 pub use environment::Environment;
 pub use error::ModelError;
 pub use folder::{Folder, Node};
+pub use ids::Ids;
 pub use interpolate::{
     ResolvedBody, ResolvedPart, ResolvedPartValue, ResolvedRequest, interpolate,
 };

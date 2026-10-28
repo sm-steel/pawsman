@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use secrecy::SecretString;
 
 use crate::folder::{Folder, FolderDefaults, Node};
-use crate::{Environment, Manifest, ModelError, Request, RequestId, SourceFile, dotenv};
+use crate::{Environment, Ids, Manifest, ModelError, Request, RequestId, SourceFile, dotenv};
 
 const MANIFEST: &str = "pawsman.toml";
 const FOLDER_FILE: &str = "_folder.toml";
@@ -54,6 +54,17 @@ impl Collection {
     /// `model::format_too_new` for a bad one. Everything else broken becomes an error entry, a
     /// broken environment, or an issue.
     pub fn from_files(root: &Path, files: Vec<SourceFile>) -> Result<Self, ModelError> {
+        Self::build(root, files, &mut Ids::default())
+    }
+
+    /// Builds a collection like [`Collection::from_files`], taking request ids from `ids` so a
+    /// rebuild keeps them.
+    ///
+    /// # Errors
+    ///
+    /// As [`Collection::from_files`].
+    pub fn build(root: &Path, files: Vec<SourceFile>, ids: &mut Ids) -> Result<Self, ModelError> {
+        let _ = ids;
         let files: BTreeMap<PathBuf, Vec<u8>> =
             files.into_iter().map(SourceFile::into_parts).collect();
         let manifest_path = root.join(MANIFEST);
@@ -361,6 +372,12 @@ impl Entry {
         &self.folder
     }
 
+    /// The file name without `.req.toml`: the request's key in `order`.
+    #[must_use]
+    pub fn stem(&self) -> &str {
+        ""
+    }
+
     /// The parsed request or its error.
     #[must_use]
     pub fn kind(&self) -> &EntryKind {
@@ -411,6 +428,87 @@ mod tests {
         let mut out = Vec::new();
         walk(c.root_folder(), c, &mut out);
         out
+    }
+
+    fn sources(files: &[(&str, &str)]) -> Vec<SourceFile> {
+        std::iter::once(("pawsman.toml", MANIFEST))
+            .chain(files.iter().copied())
+            .map(|(p, t)| SourceFile::new(PathBuf::from(p), t.as_bytes().to_vec()))
+            .collect()
+    }
+
+    fn id_of(c: &Collection, path: &str) -> RequestId {
+        c.entries()
+            .iter()
+            .find(|e| e.path() == Path::new(path))
+            .unwrap()
+            .id()
+    }
+
+    #[test]
+    fn ids_survive_a_rebuild_with_a_file_sorted_before() {
+        let mut ids = crate::Ids::default();
+        let b = req("b");
+        let first =
+            Collection::build(Path::new("/c"), sources(&[("b.req.toml", &b)]), &mut ids).unwrap();
+        let a = req("a");
+
+        let second = Collection::build(
+            Path::new("/c"),
+            sources(&[("a.req.toml", &a), ("b.req.toml", &b)]),
+            &mut ids,
+        )
+        .unwrap();
+
+        assert_eq!(id_of(&first, "b.req.toml"), RequestId::new(1), "first build");
+        assert_eq!(id_of(&second, "b.req.toml"), RequestId::new(1), "b kept its id");
+        assert_eq!(id_of(&second, "a.req.toml"), RequestId::new(2), "a is new");
+        assert_eq!(
+            second.entry(RequestId::new(1)).unwrap().path(),
+            Path::new("b.req.toml"),
+            "lookup by id"
+        );
+    }
+
+    #[test]
+    fn ids_follow_a_folder_rename() {
+        let mut ids = crate::Ids::default();
+        let x = req("x");
+        Collection::build(Path::new("/c"), sources(&[("users/x.req.toml", &x)]), &mut ids)
+            .unwrap();
+
+        ids.rename(Path::new("users"), Path::new("people"));
+        let c = Collection::build(Path::new("/c"), sources(&[("people/x.req.toml", &x)]), &mut ids)
+            .unwrap();
+
+        assert_eq!(id_of(&c, "people/x.req.toml"), RequestId::new(1), "same id");
+    }
+
+    #[test]
+    fn a_folder_with_only_a_folder_file_is_a_node() {
+        let c = Collection::build(
+            Path::new("/c"),
+            sources(&[("empty/_folder.toml", "name = \"Empty\"\n")]),
+            &mut crate::Ids::default(),
+        )
+        .unwrap();
+
+        let [Node::Folder(folder)] = c.root_folder().children() else {
+            panic!("{:?}", c.root_folder().children());
+        };
+        assert_eq!(folder.name(), "Empty", "named");
+        assert!(folder.children().is_empty(), "no children");
+    }
+
+    #[test]
+    fn stems_and_folders_are_exposed() {
+        let x = req("x");
+        let c = Collection::from_files(Path::new("/c"), sources(&[("users/get-x.req.toml", &x)]))
+            .unwrap();
+
+        let entry = &c.entries()[0];
+        assert_eq!(entry.stem(), "get-x", "stem");
+        assert_eq!(entry.folder(), Path::new("users"), "folder");
     }
 
     #[test]
