@@ -1,11 +1,13 @@
-//! Reading collections from disk. The model parses; this walks the directory and reads bytes.
+//! Collections on disk. The model parses; this walks the directory, caches the bytes, and writes
+//! files atomically.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::io::Write as _;
+use std::path::{Component, Path, PathBuf};
 use std::time::Instant;
 
-use pawsman_model::{Collection, Ids, ModelError, Node, SourceFile};
-use tracing::{info, warn};
+use pawsman_model::{Collection, Ids, ModelError, Node, SourceFile, edit};
+use tracing::{debug, info, warn};
 
 use crate::CoreError;
 
@@ -15,6 +17,8 @@ const MAX_DEPTH: usize = 16;
 const MAX_FILES: usize = 10_000;
 /// Directories never read, besides hidden ones.
 const SKIPPED: [&str; 2] = ["node_modules", "target"];
+/// Lines `init` puts in `.gitignore`.
+const IGNORED: [&str; 2] = [".env", ".pawsman/"];
 
 /// Loads the collection in `dir`: `pawsman.toml`, folders, requests, sidecars, environments and
 /// `.env`. Hidden directories, `node_modules` and `target` are skipped, symlinked directories are
@@ -27,57 +31,7 @@ const SKIPPED: [&str; 2] = ["node_modules", "target"];
 /// that cannot be read are logged and skipped.
 pub fn load(dir: &Path) -> Result<Collection, ModelError> {
     let started = Instant::now();
-    let root = dir.canonicalize().unwrap_or_else(|_| dir.to_owned());
-    let mut files = Vec::new();
-    let mut stack = vec![(PathBuf::new(), 0)];
-    let (mut too_deep, mut too_many) = (false, false);
-    while let Some((rel, depth)) = stack.pop() {
-        let Ok(read_dir) = std::fs::read_dir(dir.join(&rel)) else {
-            continue;
-        };
-        for entry in read_dir.flatten() {
-            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
-                continue;
-            };
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            let child = rel.join(&name);
-            if file_type.is_dir() {
-                if name.starts_with('.') || SKIPPED.contains(&name.as_str()) {
-                    continue;
-                }
-                if depth >= MAX_DEPTH {
-                    too_deep = true;
-                    continue;
-                }
-                stack.push((child, depth + 1));
-                continue;
-            }
-            let is_file = file_type.is_file()
-                || (file_type.is_symlink()
-                    && entry.path().is_file()
-                    && inside(&root, &entry.path()));
-            if !is_file || !wanted(&child, &name) {
-                continue;
-            }
-            if files.len() >= MAX_FILES {
-                too_many = true;
-                continue;
-            }
-            match std::fs::read(entry.path()) {
-                Ok(bytes) => files.push(SourceFile::new(child, bytes)),
-                Err(err) => warn!(path = %child.display(), %err, "collection file unreadable"),
-            }
-        }
-    }
-    if too_deep {
-        warn!(dir = %dir.display(), "collection deeper than 16 levels; rest skipped");
-    }
-    if too_many {
-        warn!(dir = %dir.display(), "collection has more than 10000 files; rest skipped");
-    }
-    let collection = Collection::from_files(dir, files)?;
+    let collection = Files::read(dir).collection(&mut Ids::default())?;
     for issue in collection.issues() {
         warn!(%issue, "collection issue");
     }
@@ -93,37 +47,13 @@ pub fn load(dir: &Path) -> Result<Collection, ModelError> {
     Ok(collection)
 }
 
-/// Whether `path`, symlinks followed, lies under `root`; a link out of the collection is not read.
-fn inside(root: &Path, path: &Path) -> bool {
-    path.canonicalize().is_ok_and(|real| real.starts_with(root))
-}
-
-/// The files the model reads, by name and place.
-fn wanted(rel: &Path, name: &str) -> bool {
-    let top = rel.parent() == Some(Path::new(""));
-    let in_envs = rel.parent() == Some(Path::new("envs"));
-    (top && (name == "pawsman.toml" || name == ".env"))
-        || (in_envs && name.ends_with(".env.toml"))
-        || name == "_folder.toml"
-        || name.ends_with(".req.toml")
-        || name.contains(".body.")
-}
-
-fn folders(nodes: &[Node]) -> usize {
-    nodes
-        .iter()
-        .map(|n| match n {
-            Node::Folder(f) => 1 + folders(f.children()),
-            Node::Entry(_) => 0,
-        })
-        .sum()
-}
-
 /// The bytes of every collection file, kept between reloads so a change can be compared.
 #[derive(Debug, Clone)]
 pub struct Files {
     root: PathBuf,
-    files: BTreeMap<PathBuf, Vec<u8>>,
+    /// `root` with symlinks resolved, for the symlinked-file check.
+    real: PathBuf,
+    bytes: BTreeMap<PathBuf, Vec<u8>>,
     dirs: BTreeSet<PathBuf>,
 }
 
@@ -137,15 +67,31 @@ pub struct Refresh {
     pub errors: Vec<CoreError>,
 }
 
+/// One walk's findings.
+#[derive(Default)]
+struct Walk {
+    files: BTreeMap<PathBuf, Vec<u8>>,
+    dirs: BTreeSet<PathBuf>,
+    errors: Vec<CoreError>,
+}
+
 impl Files {
     /// Walks `dir` with the rules of [`load`].
     #[must_use]
     pub fn read(dir: &Path) -> Self {
-        Self {
+        let mut files = Self {
             root: dir.to_owned(),
-            files: BTreeMap::new(),
+            real: dir.canonicalize().unwrap_or_else(|_| dir.to_owned()),
+            bytes: BTreeMap::new(),
             dirs: BTreeSet::new(),
+        };
+        let walk = files.walk(Path::new(""), 0);
+        for err in &walk.errors {
+            warn!(%err, "collection file unreadable");
         }
+        files.bytes = walk.files;
+        files.dirs = walk.dirs;
+        files
     }
 
     /// The collection directory.
@@ -163,29 +109,69 @@ impl Files {
     /// The bytes of file `rel`.
     #[must_use]
     pub fn get(&self, rel: &Path) -> Option<&[u8]> {
-        self.files.get(rel).map(Vec::as_slice)
+        self.bytes.get(rel).map(Vec::as_slice)
     }
 
     /// Every file path, sorted.
     pub fn paths(&self) -> impl Iterator<Item = &Path> {
-        self.files.keys().map(PathBuf::as_path)
+        self.bytes.keys().map(PathBuf::as_path)
     }
 
     /// Reads `rel` paths again: a directory is walked anew, a file is read, a missing path is
-    /// dropped with everything under it.
+    /// dropped with everything under it. Paths the walk would skip are ignored.
     pub fn refresh(&mut self, rel: &[PathBuf]) -> Refresh {
-        let _ = rel;
-        Refresh::default()
+        let mut refresh = Refresh::default();
+        for path in rel {
+            if path.as_os_str().is_empty() || !relevant(path) || !confined(path) {
+                continue;
+            }
+            let full = self.root.join(path);
+            match std::fs::symlink_metadata(&full) {
+                Ok(meta) if meta.is_dir() => {
+                    let old_files: BTreeMap<_, _> = self
+                        .bytes
+                        .extract_if(.., |p, _| p.starts_with(path))
+                        .collect();
+                    self.dirs.retain(|d| !d.starts_with(path));
+                    let depth = path.components().count();
+                    let walk = self.walk(path, depth);
+                    refresh.changed |= walk.files != old_files;
+                    refresh.errors.extend(walk.errors);
+                    self.bytes.extend(walk.files);
+                    self.dirs.extend(walk.dirs);
+                }
+                Ok(_) => {
+                    if !self.readable_file(&full) || !wanted(path) {
+                        continue;
+                    }
+                    match std::fs::read(&full) {
+                        Ok(bytes) => {
+                            refresh.changed |= self.bytes.get(path) != Some(&bytes);
+                            self.bytes.insert(path.clone(), bytes);
+                        }
+                        Err(err) => refresh.errors.push(CoreError::read(path, &err)),
+                    }
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    let before = self.bytes.len();
+                    self.bytes.retain(|p, _| !p.starts_with(path));
+                    self.dirs.retain(|d| !d.starts_with(path));
+                    refresh.changed |= self.bytes.len() != before;
+                }
+                Err(err) => refresh.errors.push(CoreError::read(path, &err)),
+            }
+        }
+        refresh
     }
 
     /// Records bytes the engine itself wrote.
     pub fn put(&mut self, rel: &Path, bytes: Vec<u8>) {
-        self.files.insert(rel.to_owned(), bytes);
+        self.bytes.insert(rel.to_owned(), bytes);
     }
 
     /// Forgets a file the engine itself removed.
     pub fn forget(&mut self, rel: &Path) {
-        self.files.remove(rel);
+        self.bytes.remove(rel);
     }
 
     /// Builds the collection, keeping request ids in `ids`.
@@ -195,11 +181,77 @@ impl Files {
     /// As [`Collection::build`].
     pub fn collection(&self, ids: &mut Ids) -> Result<Collection, ModelError> {
         let files = self
-            .files
+            .bytes
             .iter()
             .map(|(p, b)| SourceFile::new(p.clone(), b.clone()))
             .collect();
         Collection::build(&self.root, files, ids)
+    }
+
+    /// Walks the directory `start` (relative, `depth` levels below the root), stopping at the
+    /// depth and file caps.
+    fn walk(&self, start: &Path, depth: usize) -> Walk {
+        let mut walk = Walk::default();
+        let mut stack = vec![(start.to_owned(), depth)];
+        let (mut too_deep, mut too_many) = (false, false);
+        let budget = MAX_FILES.saturating_sub(self.bytes.len());
+        while let Some((rel, depth)) = stack.pop() {
+            let Ok(read_dir) = std::fs::read_dir(self.root.join(&rel)) else {
+                continue;
+            };
+            walk.dirs.insert(rel.clone());
+            for entry in read_dir.flatten() {
+                let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                    continue;
+                };
+                let Ok(file_type) = entry.file_type() else {
+                    continue;
+                };
+                let child = rel.join(&name);
+                if !relevant(&child) {
+                    continue;
+                }
+                if file_type.is_dir() && depth >= MAX_DEPTH {
+                    too_deep = true;
+                    continue;
+                }
+                if file_type.is_dir() {
+                    stack.push((child, depth + 1));
+                    continue;
+                }
+                let is_file = file_type.is_file()
+                    || (file_type.is_symlink() && self.readable_file(&entry.path()));
+                if !is_file || !wanted(&child) {
+                    continue;
+                }
+                if walk.files.len() >= budget {
+                    too_many = true;
+                    continue;
+                }
+                match std::fs::read(entry.path()) {
+                    Ok(bytes) => {
+                        walk.files.insert(child, bytes);
+                    }
+                    Err(err) => walk.errors.push(CoreError::read(&child, &err)),
+                }
+            }
+        }
+        if too_deep {
+            warn!(dir = %self.root.display(), "collection deeper than 16 levels; rest skipped");
+        }
+        if too_many {
+            warn!(dir = %self.root.display(), "collection has more than 10000 files; rest skipped");
+        }
+        walk
+    }
+
+    /// A regular file, or a symlink to one inside the collection.
+    fn readable_file(&self, path: &Path) -> bool {
+        match std::fs::symlink_metadata(path) {
+            Ok(meta) if meta.file_type().is_symlink() => path.is_file() && inside(&self.real, path),
+            Ok(meta) => meta.is_file(),
+            Err(_) => false,
+        }
     }
 }
 
@@ -207,8 +259,20 @@ impl Files {
 /// `node_modules` or `target`.
 #[must_use]
 pub fn relevant(rel: &Path) -> bool {
-    let _ = rel;
-    true
+    if rel == Path::new(".env") {
+        return true;
+    }
+    rel.components().all(|c| match c {
+        Component::Normal(name) => name
+            .to_str()
+            .is_some_and(|n| !n.starts_with('.') && !SKIPPED.contains(&n)),
+        _ => false,
+    })
+}
+
+/// Relative, with no `..`, root or prefix: it stays under the collection.
+fn confined(rel: &Path) -> bool {
+    rel.components().all(|c| matches!(c, Component::Normal(_)))
 }
 
 /// Writes `bytes` to `rel` under `root` atomically: a temp file in the same directory, synced, then
@@ -216,9 +280,40 @@ pub fn relevant(rel: &Path) -> bool {
 ///
 /// # Errors
 ///
-/// `core::write` when the directory cannot be created or the file cannot be written.
+/// `core::write` when `rel` leaves the collection, or the directory or file cannot be written.
 pub fn write(root: &Path, rel: &Path, bytes: &[u8]) -> Result<(), CoreError> {
-    let _ = (root, rel, bytes);
+    if !confined(rel) || rel.as_os_str().is_empty() {
+        return Err(CoreError::write(
+            rel,
+            &std::io::Error::other("the path leaves the collection"),
+        ));
+    }
+    let target = root.join(rel);
+    let fail = |err: std::io::Error| CoreError::write(rel, &err);
+    let parent = target.parent().unwrap_or(root);
+    std::fs::create_dir_all(parent).map_err(fail)?;
+    let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(fail)?;
+    temp.write_all(bytes).map_err(fail)?;
+    match std::fs::metadata(&target) {
+        Ok(meta) => temp.as_file().set_permissions(meta.permissions()),
+        Err(_) => set_new_file_mode(temp.as_file()),
+    }
+    .map_err(fail)?;
+    temp.as_file().sync_all().map_err(fail)?;
+    temp.persist(&target).map_err(|e| fail(e.error))?;
+    debug!(path = %rel.display(), bytes = bytes.len(), "written");
+    Ok(())
+}
+
+/// `0644` for a new file; the temp file starts as `0600`.
+#[cfg(unix)]
+fn set_new_file_mode(file: &std::fs::File) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    file.set_permissions(std::fs::Permissions::from_mode(0o644))
+}
+
+#[cfg(not(unix))]
+fn set_new_file_mode(_file: &std::fs::File) -> std::io::Result<()> {
     Ok(())
 }
 
@@ -230,8 +325,72 @@ pub fn write(root: &Path, rel: &Path, bytes: &[u8]) -> Result<(), CoreError> {
 /// `core::exists` when `dir` already holds `pawsman.toml`; `core::write` when a file cannot be
 /// written.
 pub fn init(dir: &Path) -> Result<(), CoreError> {
-    let _ = dir;
+    let manifest = dir.join("pawsman.toml");
+    if manifest.exists() {
+        return Err(CoreError::exists(&manifest));
+    }
+    std::fs::create_dir_all(dir).map_err(|e| CoreError::write(dir, &e))?;
+    let name = dir
+        .canonicalize()
+        .ok()
+        .and_then(|d| d.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "collection".to_owned());
+    write(
+        dir,
+        Path::new("pawsman.toml"),
+        edit::new_manifest(&name).as_bytes(),
+    )?;
+    let ignore = dir.join(".gitignore");
+    let mut text = match std::fs::read_to_string(&ignore) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(err) => return Err(CoreError::write(&ignore, &err)),
+    };
+    let missing: Vec<&str> = IGNORED
+        .into_iter()
+        .filter(|line| !text.lines().any(|l| l.trim() == *line))
+        .collect();
+    if !missing.is_empty() {
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        for line in missing {
+            text.push_str(line);
+            text.push('\n');
+        }
+        write(dir, Path::new(".gitignore"), text.as_bytes())?;
+    }
+    info!(dir = %dir.display(), "collection created");
     Ok(())
+}
+
+/// Whether `path`, symlinks followed, lies under `root`; a link out of the collection is not read.
+fn inside(root: &Path, path: &Path) -> bool {
+    path.canonicalize().is_ok_and(|real| real.starts_with(root))
+}
+
+/// The files the model reads, by name and place.
+fn wanted(rel: &Path) -> bool {
+    let Some(name) = rel.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let top = rel.parent() == Some(Path::new(""));
+    let in_envs = rel.parent() == Some(Path::new("envs"));
+    (top && (name == "pawsman.toml" || name == ".env"))
+        || (in_envs && name.ends_with(".env.toml"))
+        || name == "_folder.toml"
+        || name.ends_with(".req.toml")
+        || name.contains(".body.")
+}
+
+fn folders(nodes: &[Node]) -> usize {
+    nodes
+        .iter()
+        .map(|n| match n {
+            Node::Folder(f) => 1 + folders(f.children()),
+            Node::Entry(_) => 0,
+        })
+        .sum()
 }
 
 #[cfg(test)]

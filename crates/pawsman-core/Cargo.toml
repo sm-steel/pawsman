@@ -8,6 +8,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+tempfile.workspace = true
 bytes.workspace = true
 fastrand.workspace = true
 pawsman-error.workspace = true
@@ -22,7 +23,6 @@ insta.workspace = true
 pawsman-net = { workspace = true, features = ["test-util"] }
 pawsman-test-support.workspace = true
 rstest.workspace = true
-tempfile.workspace = true
 tracing-subscriber.workspace = true
 
 [lints]

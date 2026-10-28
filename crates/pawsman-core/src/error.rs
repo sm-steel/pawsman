@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use pawsman_error::{ErrorCode, ErrorInfo};
+use pawsman_error::{ErrorCode, ErrorInfo, Retry};
 
 use crate::codes;
 
@@ -21,6 +21,9 @@ enum Kind {
     SettingsInvalid { path: PathBuf, reason: String },
     GlobalsInvalid { path: PathBuf, reason: String },
     BodyFile { path: PathBuf, reason: String },
+    Write { path: PathBuf, reason: String },
+    Read { path: PathBuf, reason: String },
+    Exists { path: PathBuf },
 }
 
 impl CoreError {
@@ -46,6 +49,32 @@ impl CoreError {
         }
     }
 
+    pub(crate) fn write(path: &Path, err: &std::io::Error) -> Self {
+        Self {
+            kind: Kind::Write {
+                path: path.to_owned(),
+                reason: err.to_string(),
+            },
+        }
+    }
+
+    pub(crate) fn read(path: &Path, err: &std::io::Error) -> Self {
+        Self {
+            kind: Kind::Read {
+                path: path.to_owned(),
+                reason: err.to_string(),
+            },
+        }
+    }
+
+    pub(crate) fn exists(path: &Path) -> Self {
+        Self {
+            kind: Kind::Exists {
+                path: path.to_owned(),
+            },
+        }
+    }
+
     pub(crate) fn settings_invalid(path: &Path, reason: impl Into<String>) -> Self {
         Self {
             kind: Kind::SettingsInvalid {
@@ -67,6 +96,13 @@ impl fmt::Display for CoreError {
                     path.display()
                 )
             }
+            Kind::Write { path, reason } => {
+                write!(f, "`{}` cannot be written: {reason}", path.display())
+            }
+            Kind::Read { path, reason } => {
+                write!(f, "`{}` cannot be read: {reason}", path.display())
+            }
+            Kind::Exists { path } => write!(f, "`{}` already exists", path.display()),
             Kind::SettingsInvalid { path, reason } | Kind::GlobalsInvalid { path, reason } => {
                 write!(f, "`{}` is not valid: {reason}", path.display())
             }
@@ -83,6 +119,9 @@ impl ErrorInfo for CoreError {
             Kind::SettingsInvalid { .. } => codes::SETTINGS_INVALID,
             Kind::GlobalsInvalid { .. } => codes::GLOBALS_INVALID,
             Kind::BodyFile { .. } => codes::BODY_FILE,
+            Kind::Write { .. } => codes::WRITE,
+            Kind::Read { .. } => codes::READ,
+            Kind::Exists { .. } => codes::EXISTS,
         }
     }
 
@@ -96,7 +135,17 @@ impl ErrorInfo for CoreError {
             Kind::BodyFile { .. } => {
                 "Check the path in the request's `[body]`; it is relative to the request file."
             }
+            Kind::Write { .. } => "Check the folder's permissions and free space, then retry.",
+            Kind::Read { .. } => "Check the file's permissions, then save it again.",
+            Kind::Exists { .. } => "Pick another name, or move the other file away first.",
         }))
+    }
+
+    fn retry(&self) -> Retry {
+        match self.kind {
+            Kind::Write { .. } | Kind::Read { .. } => Retry::Retryable,
+            _ => Retry::Permanent,
+        }
     }
 }
 
