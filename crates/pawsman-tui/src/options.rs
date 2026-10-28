@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use pawsman_core::engine::Setup;
 use pawsman_core::env::EnvSnapshot;
+use pawsman_core::keys::Keymap;
 use pawsman_core::notice::Notice;
 use pawsman_core::settings::{ImageMode, Settings};
 
@@ -19,6 +20,7 @@ pub struct Options {
     dir: Option<PathBuf>,
     globals: Option<PathBuf>,
     settings: Settings,
+    keymap: Keymap,
 }
 
 impl Options {
@@ -33,7 +35,15 @@ impl Options {
             dir: None,
             globals: None,
             settings: Settings::default(),
+            keymap: Keymap::default(),
         }
+    }
+
+    /// The key bindings, `keys.toml` applied.
+    #[must_use]
+    pub fn keymap(mut self, keymap: Keymap) -> Self {
+        self.keymap = keymap;
+        self
     }
 
     /// The collection directory to open.
@@ -70,6 +80,10 @@ impl Options {
     pub fn notices(mut self, notices: Vec<Notice>) -> Self {
         self.notices = notices;
         self
+    }
+
+    pub(crate) fn keys(&self) -> &Keymap {
+        &self.keymap
     }
 
     pub(crate) fn env(&self) -> &EnvSnapshot {

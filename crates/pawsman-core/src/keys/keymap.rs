@@ -97,6 +97,13 @@ static DEFAULTS: &[Row] = &[
         shown: Shown::Bar,
     },
     Row {
+        action: Action::Palette,
+        chords: &[Chord::ctrl('k')],
+        contexts: MAIN,
+        hint: "palette",
+        shown: Shown::Bar,
+    },
+    Row {
         action: Action::PickEnv,
         chords: &[Chord::plain(KeyCode::Char('e'))],
         contexts: MAIN,
@@ -113,9 +120,28 @@ static DEFAULTS: &[Row] = &[
     Row {
         action: Action::Confirm,
         chords: &[Chord::plain(KeyCode::Enter)],
-        contexts: &[Context::Picker],
+        contexts: &[
+            Context::Picker,
+            Context::Prompt,
+            Context::Ask,
+            Context::Palette,
+        ],
         hint: "choose",
         shown: Shown::Bar,
+    },
+    Row {
+        action: Action::Confirm,
+        chords: &[Chord::plain(KeyCode::Enter)],
+        contexts: MAIN,
+        hint: "open or close folder",
+        shown: Shown::HelpOnly,
+    },
+    Row {
+        action: Action::Confirm,
+        chords: &[Chord::plain(KeyCode::Char('y'))],
+        contexts: &[Context::Ask],
+        hint: "yes",
+        shown: Shown::HelpOnly,
     },
     Row {
         action: Action::Cancel,
@@ -134,7 +160,12 @@ static DEFAULTS: &[Row] = &[
     Row {
         action: Action::Up,
         chords: &[Chord::plain(KeyCode::Up), Chord::plain(KeyCode::Char('k'))],
-        contexts: &[Context::Main, Context::Picker],
+        contexts: &[
+            Context::Main,
+            Context::Picker,
+            Context::Palette,
+            Context::Help,
+        ],
         hint: "up",
         shown: Shown::HelpOnly,
     },
@@ -144,22 +175,102 @@ static DEFAULTS: &[Row] = &[
             Chord::plain(KeyCode::Down),
             Chord::plain(KeyCode::Char('j')),
         ],
-        contexts: &[Context::Main, Context::Picker],
+        contexts: &[
+            Context::Main,
+            Context::Picker,
+            Context::Palette,
+            Context::Help,
+        ],
         hint: "down",
         shown: Shown::HelpOnly,
     },
     Row {
         action: Action::PageUp,
         chords: &[Chord::plain(KeyCode::PageUp)],
-        contexts: MAIN,
+        contexts: &[Context::Main, Context::Help],
         hint: "page up",
         shown: Shown::HelpOnly,
     },
     Row {
         action: Action::PageDown,
         chords: &[Chord::plain(KeyCode::PageDown)],
-        contexts: MAIN,
+        contexts: &[Context::Main, Context::Help],
         hint: "page down",
+        shown: Shown::HelpOnly,
+    },
+    Row {
+        action: Action::Expand,
+        chords: &[
+            Chord::plain(KeyCode::Right),
+            Chord::plain(KeyCode::Char('l')),
+        ],
+        contexts: MAIN,
+        hint: "open folder",
+        shown: Shown::HelpOnly,
+    },
+    Row {
+        action: Action::Collapse,
+        chords: &[
+            Chord::plain(KeyCode::Left),
+            Chord::plain(KeyCode::Char('h')),
+        ],
+        contexts: MAIN,
+        hint: "close folder",
+        shown: Shown::HelpOnly,
+    },
+    Row {
+        action: Action::NewRequest,
+        chords: &[Chord::plain(KeyCode::Char('a'))],
+        contexts: MAIN,
+        hint: "new request",
+        shown: Shown::HelpOnly,
+    },
+    Row {
+        action: Action::NewFolder,
+        chords: &[Chord::plain(KeyCode::Char('A'))],
+        contexts: MAIN,
+        hint: "new folder",
+        shown: Shown::HelpOnly,
+    },
+    Row {
+        action: Action::Rename,
+        chords: &[
+            Chord::plain(KeyCode::Char('r')),
+            Chord::plain(KeyCode::F(2)),
+        ],
+        contexts: MAIN,
+        hint: "rename",
+        shown: Shown::HelpOnly,
+    },
+    Row {
+        action: Action::Delete,
+        chords: &[
+            Chord::plain(KeyCode::Char('d')),
+            Chord::plain(KeyCode::Delete),
+        ],
+        contexts: MAIN,
+        hint: "delete",
+        shown: Shown::HelpOnly,
+    },
+    Row {
+        action: Action::MoveUp,
+        chords: &[Chord::plain(KeyCode::Char('K'))],
+        contexts: MAIN,
+        hint: "move up",
+        shown: Shown::HelpOnly,
+    },
+    Row {
+        action: Action::MoveDown,
+        chords: &[Chord::plain(KeyCode::Char('J'))],
+        contexts: MAIN,
+        hint: "move down",
+        shown: Shown::HelpOnly,
+    },
+    Row {
+        action: Action::Reload,
+        chords: &[Chord::ctrl('r')],
+        contexts: MAIN,
+        hint: "reload from disk",
         shown: Shown::HelpOnly,
     },
     Row {
@@ -179,9 +290,22 @@ static DEFAULTS: &[Row] = &[
     Row {
         action: Action::Close,
         chords: &[Chord::plain(KeyCode::Esc), Chord::plain(KeyCode::F(1))],
-        contexts: &[Context::Help, Context::Picker],
+        contexts: &[
+            Context::Help,
+            Context::Picker,
+            Context::Prompt,
+            Context::Ask,
+            Context::Palette,
+        ],
         hint: "close",
         shown: Shown::Bar,
+    },
+    Row {
+        action: Action::Close,
+        chords: &[Chord::plain(KeyCode::Char('n'))],
+        contexts: &[Context::Ask],
+        hint: "no",
+        shown: Shown::HelpOnly,
     },
     Row {
         action: Action::Copy,
@@ -265,17 +389,80 @@ impl Keymap {
     /// `core::keys_invalid` for an unknown action or key, a bad chord, quit or help without a key,
     /// or one chord on two actions in the same context.
     pub fn parse(text: &str, path: &Path) -> Result<Self, CoreError> {
-        let _ = (text, path);
-        Ok(Self::default())
+        let invalid = |reason: String| CoreError::keys_invalid(path, reason);
+        let file: File = toml::from_str(text).map_err(|e| invalid(e.message().to_owned()))?;
+        let mut keymap = Self::default();
+        for (name, labels) in file.keys.unwrap_or_default() {
+            let action: Action = name.parse().map_err(invalid)?;
+            let chords = labels
+                .iter()
+                .map(|l| l.parse::<Chord>())
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| invalid(format!("`{name}`: {e}")))?;
+            if chords.is_empty() && matches!(action, Action::Quit | Action::Help) {
+                return Err(invalid(format!("`{name}` needs a key")));
+            }
+            for binding in keymap.bindings.iter_mut().filter(|b| b.action == action) {
+                binding.chords.clone_from(&chords);
+            }
+        }
+        keymap.check().map_err(invalid)?;
+        Ok(keymap)
+    }
+
+    /// One chord on two actions that share a context.
+    fn check(&self) -> Result<(), String> {
+        for (i, a) in self.bindings.iter().enumerate() {
+            for b in self.bindings.iter().skip(i + 1) {
+                let shared = a.action != b.action
+                    && a.contexts.iter().any(|c| b.contexts.contains(c))
+                    && a.chords.iter().any(|c| b.chords.contains(c));
+                if shared {
+                    return Err(format!(
+                        "`{}` and `{}` share a key",
+                        a.action.name(),
+                        b.action.name()
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Reads `keys.toml` at `path`: the defaults when it is missing; the defaults and the error
     /// when it is invalid.
     #[must_use]
     pub fn load(path: &Path) -> (Self, Option<CoreError>) {
-        let _ = path;
-        (Self::default(), None)
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return (Self::default(), None);
+            }
+            Err(err) => {
+                return (
+                    Self::default(),
+                    Some(CoreError::keys_invalid(path, err.to_string())),
+                );
+            }
+        };
+        match Self::parse(&text, path) {
+            Ok(keymap) => {
+                tracing::info!(path = %path.display(), "keys.toml applied");
+                (keymap, None)
+            }
+            Err(err) => {
+                tracing::warn!(%err, "keys.toml ignored");
+                (Self::default(), Some(err))
+            }
+        }
     }
+}
+
+/// `keys.toml`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct File {
+    keys: Option<std::collections::BTreeMap<String, Vec<String>>>,
 }
 
 #[cfg(test)]

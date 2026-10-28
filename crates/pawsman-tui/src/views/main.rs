@@ -2,7 +2,7 @@
 
 use std::time::Instant;
 
-use pawsman_core::keys::Context;
+use pawsman_core::keys::{Context, Keymap};
 use pawsman_core::notice::Notice;
 use pawsman_core::resolve::Preview;
 use pawsman_core::state::Snapshot;
@@ -78,6 +78,8 @@ pub(crate) struct MainView<'a> {
     pub(crate) preview: Option<&'a Result<Preview, Notice>>,
     /// Show the variable trace under the request.
     pub(crate) trace: TraceView,
+    /// The bindings, for the hint bar.
+    pub(crate) keys: &'a Keymap,
 }
 
 /// Sidebar width in the wide layouts.
@@ -103,7 +105,7 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, view: &MainView<'_>) {
         frame.render_widget(super::home::notice_line(n), notice);
     }
     frame.render_widget(
-        Paragraph::new(hints::fit(Context::Main, bar.width)).style(Style::new().fg(DIM)),
+        Paragraph::new(hints::fit(view.keys, Context::Main, bar.width)).style(Style::new().fg(DIM)),
         bar,
     );
     if body.width >= 160 {

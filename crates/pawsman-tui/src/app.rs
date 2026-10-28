@@ -7,7 +7,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use pawsman_core::engine::Engine;
-use pawsman_core::keys::{self, Action, Context};
+use pawsman_core::keys::{Action, Context, Keymap};
 use pawsman_core::notice::Notice;
 use pawsman_core::resolve::Preview;
 use pawsman_core::state::Snapshot;
@@ -96,7 +96,8 @@ const PAGE: u16 = 10;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Overlay {
     None,
-    Help,
+    /// The help overlay, scrolled by this many rows.
+    Help(u16),
     /// The environment picker, its highlighted row.
     Picker(usize),
 }
@@ -119,6 +120,7 @@ pub(crate) struct App {
     trace: TraceView,
     preview: PreviewCache,
     commands: Vec<UiCommand>,
+    keys: Keymap,
 }
 
 impl App {
@@ -140,7 +142,14 @@ impl App {
             trace: TraceView::Hidden,
             preview: None,
             commands: Vec::new(),
+            keys: Keymap::default(),
         }
+    }
+
+    /// Uses `keys` instead of the default bindings.
+    pub(crate) fn with_keys(mut self, keys: Keymap) -> Self {
+        self.keys = keys;
+        self
     }
 
     /// The screen after the splash: the collection if one is open, else home.
@@ -307,7 +316,7 @@ impl App {
     fn context(&self) -> Context {
         match (&self.screen, self.overlay) {
             (Screen::Splash(_), _) => Context::Splash,
-            (Screen::Home | Screen::Main, Overlay::Help) => Context::Help,
+            (Screen::Home | Screen::Main, Overlay::Help(_)) => Context::Help,
             (Screen::Main, Overlay::Picker(_)) => Context::Picker,
             (Screen::Home, Overlay::None | Overlay::Picker(_)) => Context::Home,
             (Screen::Main, Overlay::None) => Context::Main,
@@ -334,7 +343,7 @@ impl App {
             }
             Msg::Resize | Msg::Input(_) => return Ok(Flow::Continue),
         };
-        let action = keys::lookup(self.context(), chord);
+        let action = self.keys.lookup(self.context(), chord);
         if let Screen::Splash(splash) = &mut self.screen
             && action != Some(Action::Quit)
         {
@@ -343,14 +352,25 @@ impl App {
         }
         match action {
             Some(Action::Quit) => return Ok(Flow::Quit),
-            Some(Action::Help) => self.overlay = Overlay::Help,
+            Some(Action::Help) => self.overlay = Overlay::Help(0),
             Some(Action::Close) => self.overlay = Overlay::None,
+            Some(action) if let Overlay::Help(scroll) = self.overlay => {
+                let step: i32 = match action {
+                    Action::Up => -1,
+                    Action::Down => 1,
+                    Action::PageUp => -i32::from(PAGE),
+                    Action::PageDown => i32::from(PAGE),
+                    _ => 0,
+                };
+                let next = (i32::from(scroll) + step).max(0);
+                self.overlay = Overlay::Help(u16::try_from(next).unwrap_or(u16::MAX));
+            }
             Some(action) if let Overlay::Picker(at) = self.overlay => {
                 self.picker_action(action, at);
             }
             Some(Action::Copy) => self.notices.push_back(Notice::info(format!(
                 "nothing selected · {} quits",
-                quit_label()
+                self.keys.label(Action::Quit).unwrap_or_default()
             ))),
             Some(action) if matches!(self.screen, Screen::Main) => self.main_action(action),
             None if !chord.mods().is_empty() => tracing::debug!(%chord, "unbound key"),
@@ -390,14 +410,17 @@ impl App {
                     notice: notice.as_ref(),
                     preview,
                     trace: self.trace,
+                    keys: &self.keys,
                 };
                 main::draw(frame, area, &view);
             }
         } else {
-            home::draw(frame, area, notice.as_ref(), &self.caps);
+            home::draw(frame, area, notice.as_ref(), &self.caps, &self.keys);
         }
         match self.overlay {
-            Overlay::Help => help::draw(frame, area),
+            Overlay::Help(scroll) => {
+                self.overlay = Overlay::Help(help::draw(frame, area, &self.keys, scroll));
+            }
             Overlay::Picker(at) => picker::draw(frame, area, &self.picker_items(), at),
             Overlay::None => {}
         }
@@ -489,11 +512,12 @@ pub fn run(mut options: Options) -> Result<(), TuiError> {
     .ok();
     let backend = CrosstermBackend::new(BufWriter::with_capacity(1 << 16, term.writer()?));
     let splash = options.splash();
+    let keys = options.keys().clone();
     let result = Terminal::new(backend)
         .map_err(TuiError::terminal_io)
         .and_then(|mut terminal| {
             notices.extend(options.into_notices());
-            let mut app = App::new(splash, caps, notices);
+            let mut app = App::new(splash, caps, notices).with_keys(keys);
             event_loop(&mut terminal, &mut app, &rx, engine.as_ref())
         });
     if let Some(engine) = engine {
@@ -548,15 +572,6 @@ fn event_loop<B: Backend<Error = std::io::Error>>(
             }
         }
     }
-}
-
-/// The label of the first quit key, for hints.
-fn quit_label() -> String {
-    keys::table()
-        .iter()
-        .find(|b| b.action() == Action::Quit)
-        .and_then(|b| b.chords().first())
-        .map_or_else(|| "Ctrl-Q".to_owned(), ToString::to_string)
 }
 
 /// The splash's coalesce pattern changes from run to run.
@@ -1176,13 +1191,19 @@ mod tests {
         app.update(key(Chord::plain(KeyCode::F(1))), Duration::ZERO)
             .unwrap();
         let open = screen(&render(&mut app, 80, 24, Duration::ZERO));
+        for _ in 0..3 {
+            app.update(key(Chord::plain(KeyCode::PageDown)), Duration::ZERO)
+                .unwrap();
+        }
+        let scrolled = screen(&render(&mut app, 80, 24, Duration::ZERO));
         app.update(key(Chord::plain(KeyCode::Esc)), Duration::ZERO)
             .unwrap();
         let closed = screen(&render(&mut app, 80, 24, Duration::ZERO));
 
+        assert!(open.contains("Ctrl-Q"), "quit on the first page:\n{open}");
         assert!(
-            open.contains("Ctrl-Q") && open.contains("copy the selection"),
-            "help lists the table:\n{open}"
+            scrolled.contains("copy the selection"),
+            "the rest of the table scrolls in:\n{scrolled}"
         );
         assert!(!closed.contains("copy the selection"), "closed:\n{closed}");
     }
