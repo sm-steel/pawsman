@@ -14,6 +14,7 @@ pub mod settings;
 pub mod state;
 pub mod store;
 pub mod tree;
+pub mod watch;
 pub mod wire;
 
 pub use error::CoreError;
