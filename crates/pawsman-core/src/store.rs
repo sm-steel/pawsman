@@ -10,6 +10,7 @@ use pawsman_model::{Collection, Ids, ModelError, Node, SourceFile, edit};
 use tracing::{debug, info, warn};
 
 use crate::CoreError;
+use crate::tree::Change;
 
 /// Folders below this depth are not read.
 const MAX_DEPTH: usize = 16;
@@ -188,6 +189,25 @@ impl Files {
         Collection::build(&self.root, files, ids)
     }
 
+    /// Files held in memory, for tests of pure code; directories come from the paths.
+    #[cfg(test)]
+    pub(crate) fn from_pairs(root: &Path, pairs: &[(&str, &str)]) -> Self {
+        let bytes: BTreeMap<PathBuf, Vec<u8>> = pairs
+            .iter()
+            .map(|(p, t)| (PathBuf::from(p), t.as_bytes().to_vec()))
+            .collect();
+        let dirs = bytes
+            .keys()
+            .flat_map(|p| p.ancestors().skip(1).map(Path::to_owned))
+            .collect();
+        Self {
+            root: root.to_owned(),
+            real: root.to_owned(),
+            bytes,
+            dirs,
+        }
+    }
+
     /// Walks the directory `start` (relative, `depth` levels below the root), stopping at the
     /// depth and file caps.
     fn walk(&self, start: &Path, depth: usize) -> Walk {
@@ -315,6 +335,17 @@ fn set_new_file_mode(file: &std::fs::File) -> std::io::Result<()> {
 #[cfg(not(unix))]
 fn set_new_file_mode(_file: &std::fs::File) -> std::io::Result<()> {
     Ok(())
+}
+
+/// Runs `changes` in order under `root`; returns the directories `RemoveDirIfEmpty` had to keep.
+///
+/// # Errors
+///
+/// `core::exists` when a rename target exists; `core::write` when a change fails. Changes before
+/// the failing one stay done.
+pub fn apply(root: &Path, changes: &[Change]) -> Result<Vec<PathBuf>, CoreError> {
+    let _ = (root, changes);
+    Ok(Vec::new())
 }
 
 /// Creates a collection in `dir`: `pawsman.toml` named after the directory, and `.gitignore` lines
@@ -756,6 +787,81 @@ mod tests {
 
         assert_eq!(err.code(), crate::codes::WRITE, "code");
         assert!(err.to_string().contains("a.req.toml"), "{err}");
+    }
+
+    #[test]
+    fn apply_runs_changes_and_reports_kept_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        put(dir.path(), "users/a.req.toml", REQ);
+        put(dir.path(), "users/notes.md", "keep me");
+        put(dir.path(), "old/x.req.toml", REQ);
+        put(dir.path(), "b.req.toml", REQ);
+
+        let kept = apply(
+            dir.path(),
+            &[
+                Change::Rename {
+                    from: "old".into(),
+                    to: "new".into(),
+                },
+                Change::Write {
+                    path: "c.req.toml".into(),
+                    bytes: b"c".to_vec(),
+                },
+                Change::Remove("users/a.req.toml".into()),
+                Change::RemoveDirIfEmpty("users".into()),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(kept, [PathBuf::from("users")], "notes.md kept the folder");
+        assert!(dir.path().join("new/x.req.toml").exists(), "renamed");
+        assert_eq!(std::fs::read(dir.path().join("c.req.toml")).unwrap(), b"c");
+        assert!(!dir.path().join("users/a.req.toml").exists(), "removed");
+        assert!(
+            dir.path().join("users/notes.md").exists(),
+            "other file kept"
+        );
+    }
+
+    #[test]
+    fn apply_refuses_to_rename_onto_an_existing_path() {
+        let dir = tempfile::tempdir().unwrap();
+        put(dir.path(), "a.req.toml", "a");
+        put(dir.path(), "b.req.toml", "b");
+
+        let err = apply(
+            dir.path(),
+            &[Change::Rename {
+                from: "a.req.toml".into(),
+                to: "b.req.toml".into(),
+            }],
+        )
+        .unwrap_err();
+
+        assert_eq!(err.code(), crate::codes::EXISTS, "code");
+        assert_eq!(
+            std::fs::read(dir.path().join("b.req.toml")).unwrap(),
+            b"b",
+            "kept"
+        );
+    }
+
+    #[test]
+    fn apply_removes_an_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        put(dir.path(), "users/a.req.toml", REQ);
+
+        apply(
+            dir.path(),
+            &[
+                Change::Remove("users/a.req.toml".into()),
+                Change::RemoveDirIfEmpty("users".into()),
+            ],
+        )
+        .unwrap();
+
+        assert!(!dir.path().join("users").exists(), "gone");
     }
 
     #[test]
