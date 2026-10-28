@@ -234,13 +234,11 @@ fn demo_dir() -> PathBuf {
 #[test]
 #[ignore = "writes PNG files for the visual check"]
 fn visual_environments() {
-    use std::path::Path;
     use std::time::Instant;
 
     use pawsman_core::env::EnvSnapshot;
     use pawsman_core::resolve::Context;
     use pawsman_core::state::{AppState, Event};
-    use pawsman_model::RequestId;
 
     let mut r = png::Renderer::new();
     let env = EnvSnapshot::from_pairs([("PAWSMAN_SECRET_TOKEN", "s3cr3t")]);
