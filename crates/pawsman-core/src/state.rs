@@ -47,6 +47,7 @@ pub struct Snapshot {
     context: Arc<Context>,
     statuses: BTreeMap<RequestId, RequestStatus>,
     notices: Vec<Notice>,
+    created: Option<PathBuf>,
     generation: u64,
 }
 
@@ -112,7 +113,7 @@ impl Snapshot {
     /// The path of a node a tree operation just created or renamed, delivered once.
     #[must_use]
     pub fn created(&self) -> Option<&Path> {
-        None
+        self.created.as_deref()
     }
 }
 
@@ -136,7 +137,7 @@ pub enum Event {
     /// The network reported something.
     Net(NetEvent),
     /// The collection was read again from disk.
-    Reloaded(Result<Collection, ModelError>),
+    Reloaded(Box<Result<Collection, ModelError>>),
     /// A tree operation created or renamed the node at this path.
     Created(PathBuf),
 }
@@ -160,6 +161,7 @@ pub struct AppState {
     context: Arc<Context>,
     statuses: BTreeMap<RequestId, RequestStatus>,
     notices: Vec<Notice>,
+    created: Option<PathBuf>,
     generation: u64,
 }
 
@@ -182,6 +184,7 @@ impl AppState {
             context: Arc::new(context),
             statuses: BTreeMap::new(),
             notices,
+            created: None,
             generation: 0,
         }
     }
@@ -196,6 +199,7 @@ impl AppState {
             context: Arc::new(Context::default()),
             statuses: BTreeMap::new(),
             notices: Vec::new(),
+            created: None,
             generation: 0,
         }
     }
@@ -204,6 +208,26 @@ impl AppState {
     #[must_use]
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// The environment requests resolve in.
+    #[must_use]
+    pub fn active_env(&self) -> Option<&str> {
+        self.active_env.as_deref()
+    }
+
+    /// The open collection.
+    pub(crate) fn collection(&self) -> Option<Arc<Collection>> {
+        self.collection.clone()
+    }
+
+    /// Whether the collection has environment `name` and it is not broken.
+    pub(crate) fn has_usable_env(&self, name: &str) -> bool {
+        self.collection.as_ref().is_some_and(|c| {
+            c.environments()
+                .iter()
+                .any(|e| e.name() == name && e.error().is_none())
+        })
     }
 
     /// Raises `notice` with the next snapshot.
@@ -226,7 +250,15 @@ impl AppState {
                 self.select_env(env);
                 Vec::new()
             }
-            Event::Reloaded(_) | Event::Created(_) => Vec::new(),
+            Event::Reloaded(result) => {
+                self.reload(*result);
+                Vec::new()
+            }
+            Event::Created(path) => {
+                self.created = Some(path);
+                self.generation += 1;
+                Vec::new()
+            }
             Event::Net(event) => {
                 let (id, status) = match event {
                     NetEvent::Done { id, response } => {
@@ -240,6 +272,48 @@ impl AppState {
                 Vec::new()
             }
         }
+    }
+
+    fn reload(&mut self, result: Result<Collection, ModelError>) {
+        let collection = match result {
+            Ok(collection) => collection,
+            Err(err) if self.collection.is_some() => {
+                self.notice(Notice::from_error(&err));
+                return;
+            }
+            Err(err) => {
+                self.load_error = Some(err);
+                self.generation += 1;
+                return;
+            }
+        };
+        let old: Vec<String> = self
+            .collection
+            .as_ref()
+            .map(|c| c.issues().iter().map(ToString::to_string).collect())
+            .unwrap_or_default();
+        for issue in collection.issues() {
+            if !old.contains(&issue.to_string()) {
+                self.notices.push(Notice::from_error(issue));
+            }
+        }
+        self.statuses
+            .retain(|id, _| collection.entry(*id).is_some());
+        if let Some(name) = self.active_env.clone() {
+            let usable = collection
+                .environments()
+                .iter()
+                .any(|e| e.name() == name && e.error().is_none());
+            if !usable {
+                self.notices.push(Notice::warn(format!(
+                    "environment `{name}` is gone or broken; none is active"
+                )));
+                self.active_env = None;
+            }
+        }
+        self.collection = Some(Arc::new(collection));
+        self.load_error = None;
+        self.generation += 1;
     }
 
     fn select_env(&mut self, env: Option<String>) {
@@ -351,6 +425,7 @@ impl AppState {
             context: Arc::clone(&self.context),
             statuses: self.statuses.clone(),
             notices: std::mem::take(&mut self.notices),
+            created: self.created.take(),
             generation: self.generation,
         })
     }
@@ -613,7 +688,10 @@ mod tests {
         done_for(&mut s, 2);
         let g = s.snapshot().generation();
 
-        s.apply(Event::Reloaded(Ok(collection(&files[..1]))), now());
+        s.apply(
+            Event::Reloaded(Box::new(Ok(collection(&files[..1])))),
+            now(),
+        );
         let snap = s.snapshot();
 
         assert!(snap.generation() > g, "a change");
@@ -621,7 +699,7 @@ mod tests {
             matches!(snap.status(id(1)), RequestStatus::Done(_)),
             "a kept its response"
         );
-        assert!(s.statuses.get(&id(2)).is_none(), "b's status dropped");
+        assert!(!s.statuses.contains_key(&id(2)), "b's status dropped");
         assert_eq!(
             snap.collection().unwrap().entries().len(),
             1,
@@ -636,7 +714,7 @@ mod tests {
         s.snapshot();
         let broken = [ENVS[0], ("envs/dev.env.toml", "vars = 1\n")];
 
-        s.apply(Event::Reloaded(Ok(collection(&broken))), now());
+        s.apply(Event::Reloaded(Box::new(Ok(collection(&broken)))), now());
         let snap = s.snapshot();
 
         assert_eq!(snap.active_env(), None, "cleared");
@@ -652,7 +730,7 @@ mod tests {
         let mut s = AppState::new(Ok(collection(ENVS)), Context::default());
         s.apply(Event::SelectEnv(Some("dev".into())), now());
 
-        s.apply(Event::Reloaded(Ok(collection(ENVS))), now());
+        s.apply(Event::Reloaded(Box::new(Ok(collection(ENVS)))), now());
 
         assert_eq!(s.snapshot().active_env(), Some("dev"), "kept");
     }
@@ -663,10 +741,10 @@ mod tests {
         s.snapshot();
 
         s.apply(
-            Event::Reloaded(Err(ModelError::invalid_file(
+            Event::Reloaded(Box::new(Err(ModelError::invalid_file(
                 Path::new("pawsman.toml"),
                 "expected `=`",
-            ))),
+            )))),
             now(),
         );
         let snap = s.snapshot();
@@ -690,9 +768,9 @@ mod tests {
             (".env", "bad line\n"),
         ];
 
-        s.apply(Event::Reloaded(Ok(collection(&bad))), now());
+        s.apply(Event::Reloaded(Box::new(Ok(collection(&bad)))), now());
         let first = s.snapshot().notices().len();
-        s.apply(Event::Reloaded(Ok(collection(&bad))), now());
+        s.apply(Event::Reloaded(Box::new(Ok(collection(&bad)))), now());
         let second = s.snapshot().notices().len();
 
         assert_eq!((first, second), (1, 0), "only new issues");

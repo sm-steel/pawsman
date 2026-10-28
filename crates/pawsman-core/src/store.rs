@@ -33,6 +33,12 @@ const IGNORED: [&str; 2] = [".env", ".pawsman/"];
 pub fn load(dir: &Path) -> Result<Collection, ModelError> {
     let started = Instant::now();
     let collection = Files::read(dir).collection(&mut Ids::default())?;
+    log_loaded(dir, &collection, started);
+    Ok(collection)
+}
+
+/// The log lines of a first load: each issue, then one summary.
+pub(crate) fn log_loaded(dir: &Path, collection: &Collection, started: Instant) {
     for issue in collection.issues() {
         warn!(%issue, "collection issue");
     }
@@ -45,7 +51,6 @@ pub fn load(dir: &Path) -> Result<Collection, ModelError> {
         ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
         "collection loaded"
     );
-    Ok(collection)
 }
 
 /// The bytes of every collection file, kept between reloads so a change can be compared.

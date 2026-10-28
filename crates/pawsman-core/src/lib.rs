@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 
 pub mod codes;
+mod disk;
 pub mod engine;
 pub mod env;
 mod error;
