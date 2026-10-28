@@ -19,6 +19,8 @@ pub const READ: ErrorCode = ErrorCode::new("core::read");
 pub const EXISTS: ErrorCode = ErrorCode::new("core::exists");
 /// The file watcher cannot start.
 pub const WATCH: ErrorCode = ErrorCode::new("core::watch");
+/// `keys.toml` cannot be read, parsed or applied.
+pub const KEYS_INVALID: ErrorCode = ErrorCode::new("core::keys_invalid");
 
 /// Every code, for the registry test.
 pub const ALL: &[ErrorCode] = &[
@@ -30,6 +32,7 @@ pub const ALL: &[ErrorCode] = &[
     READ,
     EXISTS,
     WATCH,
+    KEYS_INVALID,
 ];
 
 #[cfg(test)]

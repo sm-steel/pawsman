@@ -174,6 +174,14 @@ impl fmt::Display for Chord {
     }
 }
 
+impl std::str::FromStr for Chord {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Err(format!("`{s}` is not a key"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
