@@ -1587,6 +1587,114 @@ mod tests {
             );
         }
 
+        fn palette(app: &mut App, query: &str) {
+            press(app, [key(Chord::ctrl('k'))]);
+            typed(app, query);
+        }
+
+        #[test]
+        fn ctrl_k_opens_and_a_query_without_matches_says_so() {
+            let mut app = app_with(&mut state(TREE));
+
+            press(&mut app, [key(Chord::ctrl('k'))]);
+            let open = screen(&render(&mut app, 160, 40, Duration::ZERO));
+            typed(&mut app, "xyz");
+            let none = screen(&render(&mut app, 160, 40, Duration::ZERO));
+
+            assert!(open.contains("› ") && open.contains("Send"), "{open}");
+            assert!(none.contains("no match"), "{none}");
+        }
+
+        #[test]
+        fn j_and_k_type_in_the_palette() {
+            let mut app = app_with(&mut state(TREE));
+
+            palette(&mut app, "jk");
+            let text = screen(&render(&mut app, 160, 40, Duration::ZERO));
+
+            assert!(text.contains("› jk"), "{text}");
+        }
+
+        #[test]
+        fn enter_on_a_request_selects_it() {
+            let mut app = app_with(&mut state(TREE));
+
+            palette(&mut app, "top");
+            keys(&mut app, &[KeyCode::Enter]);
+
+            assert_eq!(sends(&mut app), vec![UiCommand::Send(RequestId::new(3))]);
+        }
+
+        #[test]
+        fn a_request_in_a_collapsed_folder_is_revealed() {
+            let mut app = app_with(&mut state(TREE));
+            keys(&mut app, &[KeyCode::Up, KeyCode::Left, KeyCode::Down]);
+
+            palette(&mut app, "one");
+            keys(&mut app, &[KeyCode::Enter]);
+            let text = screen(&render(&mut app, 160, 40, Duration::ZERO));
+
+            assert!(text.contains("One"), "expanded:\n{text}");
+            assert_eq!(sends(&mut app), vec![UiCommand::Send(RequestId::new(1))]);
+        }
+
+        #[test]
+        fn down_moves_the_highlight() {
+            let mut app = app_with(&mut state(TREE));
+
+            palette(&mut app, "o");
+            keys(
+                &mut app,
+                &[KeyCode::Down, KeyCode::Up, KeyCode::Down, KeyCode::Enter],
+            );
+
+            assert!(
+                matches!(app.overlay, Overlay::None),
+                "chosen: {:?}",
+                app.overlay
+            );
+        }
+
+        #[test]
+        fn enter_on_an_action_runs_it() {
+            let mut app = app_with(&mut state_with(ENVS, &[]));
+
+            palette(&mut app, "pick env");
+            keys(&mut app, &[KeyCode::Enter]);
+            let text = screen(&render(&mut app, 160, 40, Duration::ZERO));
+
+            assert!(text.contains("Environment"), "picker open:\n{text}");
+        }
+
+        #[test]
+        fn esc_closes_the_palette() {
+            let mut app = app_with(&mut state(TREE));
+
+            palette(&mut app, "o");
+            keys(&mut app, &[KeyCode::Esc]);
+            let text = screen(&render(&mut app, 160, 40, Duration::ZERO));
+
+            assert!(!text.contains("› o"), "{text}");
+            assert!(app.take_commands().is_empty(), "nothing run");
+        }
+
+        #[test]
+        fn snapshot_100x30_palette() {
+            let mut app = app_with(&mut state(TREE));
+            palette(&mut app, "o");
+
+            insta::assert_snapshot!(render(&mut app, 100, 30, Duration::ZERO).backend());
+        }
+
+        #[test]
+        fn tiny_palettes_never_panic() {
+            for (w, h) in [(0, 0), (1, 1), (5, 2), (30, 4), (44, 6)] {
+                let mut app = app_with(&mut state(TREE));
+                palette(&mut app, "o");
+                render(&mut app, w, h, Duration::ZERO);
+            }
+        }
+
         #[test]
         fn snapshot_160x40_tree_collapsed() {
             let mut app = app_with(&mut state(TREE));
