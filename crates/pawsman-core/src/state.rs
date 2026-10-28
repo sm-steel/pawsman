@@ -726,6 +726,35 @@ mod tests {
     }
 
     #[test]
+    fn an_env_that_broke_comes_back_when_it_is_fixed() {
+        let mut s = AppState::new(Ok(collection(ENVS)), Context::default());
+        s.apply(Event::SelectEnv(Some("dev".into())), now());
+        let broken = [ENVS[0], ("envs/dev.env.toml", "vars = 1\n")];
+
+        s.apply(Event::Reloaded(Box::new(Ok(collection(&broken)))), now());
+        s.apply(Event::Reloaded(Box::new(Ok(collection(ENVS)))), now());
+
+        assert_eq!(s.snapshot().active_env(), Some("dev"), "back");
+    }
+
+    #[test]
+    fn picking_another_env_forgets_the_broken_one() {
+        let mut s = AppState::new(Ok(collection(ENVS)), Context::default());
+        s.apply(Event::SelectEnv(Some("dev".into())), now());
+        let broken = [ENVS[0], ("envs/dev.env.toml", "vars = 1\n")];
+        s.apply(Event::Reloaded(Box::new(Ok(collection(&broken)))), now());
+
+        s.apply(Event::SelectEnv(Some("prod".into())), now());
+        s.apply(Event::Reloaded(Box::new(Ok(collection(ENVS)))), now());
+
+        assert_eq!(
+            s.snapshot().active_env(),
+            Some("prod"),
+            "the user's later pick wins"
+        );
+    }
+
+    #[test]
     fn reload_keeps_a_working_env() {
         let mut s = AppState::new(Ok(collection(ENVS)), Context::default());
         s.apply(Event::SelectEnv(Some("dev".into())), now());

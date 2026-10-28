@@ -421,3 +421,46 @@ fn the_active_env_is_remembered_across_restarts() {
     assert_eq!(snap.active_env(), Some("dev"), "remembered");
     assert!(dir.path().join(".pawsman/state.toml").exists(), "stored");
 }
+
+#[test]
+fn a_tree_change_does_not_overwrite_an_edit_the_watcher_has_not_reported() {
+    let dir = collection("http://h/a");
+    put(dir.path(), "b.req.toml", "name = \"B\"\nurl = \"u\"\n");
+    put(dir.path(), "_folder.toml", "order = [\"a\", \"b\"]\n");
+    let (engine, rx) = start(Some(dir.path()));
+    let snap = wait(&rx, |s| s.collection().is_some());
+    let b = snap
+        .collection()
+        .unwrap()
+        .entries()
+        .iter()
+        .find(|e| e.stem() == "b")
+        .unwrap()
+        .id();
+    settle();
+
+    put(
+        dir.path(),
+        "_folder.toml",
+        "# mine\norder = [\"a\", \"b\"]\n",
+    );
+    engine.apply(Op::Move {
+        node: NodeRef::Request(b),
+        dir: pawsman_core::tree::Direction::Up,
+    });
+    let path = dir.path().join("_folder.toml");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !std::fs::read_to_string(&path)
+        .unwrap()
+        .contains("[\"b\", \"a\"]")
+    {
+        assert!(Instant::now() < deadline, "moved");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "# mine\norder = [\"b\", \"a\"]\n",
+        "the outside edit survives"
+    );
+}

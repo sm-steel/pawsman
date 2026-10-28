@@ -896,6 +896,38 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn writes_never_follow_a_symlinked_directory_out_of_the_collection() {
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("_folder.toml"), "theirs").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("shared")).unwrap();
+
+        let write_err = write(dir.path(), Path::new("shared/_folder.toml"), b"ours").unwrap_err();
+        put(dir.path(), "a.req.toml", REQ);
+        let rename_err = apply(
+            dir.path(),
+            &[Change::Rename {
+                from: "a.req.toml".into(),
+                to: "shared/a.req.toml".into(),
+            }],
+        )
+        .unwrap_err();
+
+        assert_eq!(write_err.code(), crate::codes::WRITE, "write refused");
+        assert_eq!(rename_err.code(), crate::codes::WRITE, "rename refused");
+        assert_eq!(
+            std::fs::read_to_string(outside.path().join("_folder.toml")).unwrap(),
+            "theirs",
+            "the outside file is untouched"
+        );
+        assert!(
+            !outside.path().join("a.req.toml").exists(),
+            "nothing moved out"
+        );
+    }
+
     #[test]
     fn apply_removes_an_empty_dir() {
         let dir = tempfile::tempdir().unwrap();
