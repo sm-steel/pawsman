@@ -274,7 +274,7 @@ fn visual_environments() {
         .snapshot()
         .collection()
         .and_then(|c| c.entries().iter().find(|e| e.stem() == "template"))
-        .map(|e| e.id())
+        .map(pawsman_model::Entry::id)
         .unwrap();
     st.apply(
         Event::Send {
