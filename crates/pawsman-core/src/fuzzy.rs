@@ -22,29 +22,142 @@ impl Match {
     }
 }
 
+/// Points for each matched character.
+const MATCH: i64 = 16;
+/// Extra for a match at the start of the text.
+const AT_START: i64 = 24;
+/// Extra for a match after a separator or at a lower-to-upper change.
+const AT_WORD: i64 = 20;
+/// Extra for a match right after the previous one.
+const IN_A_ROW: i64 = 20;
+/// The cost of a gap: this much for the first skipped character…
+const GAP_OPEN: i64 = 6;
+/// …and one more per further skipped character, up to this many.
+const GAP_GROWS: usize = 4;
+/// The largest gap cost.
+const GAP_MAX: i64 = GAP_OPEN + 4;
+const UNREACHED: i64 = i64::MIN / 4;
+
 /// How `text` matches `query`, ignoring case and spaces in the query; `None` when it does not.
 #[must_use]
 pub fn score(query: &str, text: &str) -> Option<Match> {
-    let _ = (query, text);
-    None
+    let query: Vec<char> = query
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .map(lower)
+        .collect();
+    if query.is_empty() {
+        return Some(Match {
+            score: 0,
+            positions: Vec::new(),
+        });
+    }
+    let original: Vec<char> = text.chars().collect();
+    let text: Vec<char> = original.iter().copied().map(lower).collect();
+    let mut rest = text.iter();
+    if !query.iter().all(|q| rest.any(|t| t == q)) {
+        return None;
+    }
+    // best[i][j]: the best score with query[..=i] matched and query[i] at text[j];
+    // from[i][j]: where query[i - 1] sat on that path.
+    let mut best = vec![vec![UNREACHED; text.len()]; query.len()];
+    let mut from = vec![vec![0usize; text.len()]; query.len()];
+    for (j, t) in text.iter().enumerate() {
+        if Some(t) == query.first()
+            && let Some(cell) = best.first_mut().and_then(|row| row.get_mut(j))
+        {
+            *cell = MATCH + bonus(&original, j);
+        }
+    }
+    for i in 1..query.len() {
+        let (done, todo) = best.split_at_mut(i);
+        let (Some(prev), Some(row), Some(q)) = (done.last(), todo.first_mut(), query.get(i)) else {
+            break;
+        };
+        // The best previous score far enough back to pay the largest gap cost.
+        let mut far = (UNREACHED, 0);
+        for j in 1..text.len() {
+            if let Some(k) = j.checked_sub(GAP_GROWS + 2)
+                && let Some(&s) = prev.get(k)
+                && s > far.0
+            {
+                far = (s, k);
+            }
+            if text.get(j) != Some(q) {
+                continue;
+            }
+            let mut pick = (far.0 - GAP_MAX, far.1);
+            for k in j.saturating_sub(GAP_GROWS + 1)..j {
+                let Some(&s) = prev.get(k) else {
+                    continue;
+                };
+                let skipped = j - k - 1;
+                let step = if skipped == 0 {
+                    IN_A_ROW
+                } else {
+                    -(GAP_OPEN + i64::try_from(skipped - 1).unwrap_or(0))
+                };
+                if s + step > pick.0 {
+                    pick = (s + step, k);
+                }
+            }
+            if pick.0 > UNREACHED / 2
+                && let (Some(cell), Some(back)) =
+                    (row.get_mut(j), from.get_mut(i).and_then(|r| r.get_mut(j)))
+            {
+                *cell = pick.0 + MATCH + bonus(&original, j);
+                *back = pick.1;
+            }
+        }
+    }
+    let last = best.last()?;
+    let (mut j, total) = last.iter().copied().enumerate().fold(
+        None,
+        |acc: Option<(usize, i64)>, (j, s)| match acc {
+            Some((_, b)) if b >= s => acc,
+            _ if s > UNREACHED / 2 => Some((j, s)),
+            _ => acc,
+        },
+    )?;
+    let mut positions = vec![j];
+    for i in (1..query.len()).rev() {
+        j = *from.get(i)?.get(j)?;
+        positions.push(j);
+    }
+    positions.reverse();
+    Some(Match {
+        score: u32::try_from(total.max(0)).unwrap_or(u32::MAX),
+        positions,
+    })
 }
 
 /// The items matching `query`, best first; equal scores keep their order.
 pub fn rank<T>(query: &str, items: impl IntoIterator<Item = (T, String)>) -> Vec<(T, Match)> {
-    let _ = query;
-    items
+    let mut ranked: Vec<(T, Match)> = items
         .into_iter()
-        .take(0)
-        .map(|(t, _)| {
-            (
-                t,
-                Match {
-                    score: 0,
-                    positions: Vec::new(),
-                },
-            )
-        })
-        .collect()
+        .filter_map(|(item, text)| score(query, &text).map(|m| (item, m)))
+        .collect();
+    ranked.sort_by_key(|(_, m)| std::cmp::Reverse(m.score));
+    ranked
+}
+
+fn lower(c: char) -> char {
+    c.to_lowercase().next().unwrap_or(c)
+}
+
+/// Extra points for a match at char `j`: the start, after a separator, or a case change.
+fn bonus(text: &[char], j: usize) -> i64 {
+    let Some(before) = j.checked_sub(1).and_then(|k| text.get(k)) else {
+        return AT_START;
+    };
+    let here = text.get(j).copied().unwrap_or(' ');
+    if matches!(before, ' ' | '-' | '_' | '.' | '/')
+        || (before.is_lowercase() && here.is_uppercase())
+    {
+        AT_WORD
+    } else {
+        0
+    }
 }
 
 #[cfg(test)]
