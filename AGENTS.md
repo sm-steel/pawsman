@@ -21,3 +21,7 @@ Instructions for AI coding agents (and people) working on pawsman.
 - Loosen a lint, threshold, exclusion or allowlist to hide a true finding: fix the code. A genuine false positive gets the narrowest allowance, with a comment saying why.
 - Accept a snapshot (`.snap.new`) without reading its diff.
 - Weaken, skip, delete or rewrite an approved test to make code pass; a change to a test is its own `test:` commit with its reason.
+
+## Selected migrated context
+
+Read [.agents/memory/README.md](.agents/memory/README.md) and the relevant notes for all four migrated memories. In particular, read the process self-matching note before waiting for or terminating processes. For the selected session's progress and next step, read [.agents/handoffs/P1.md](.agents/handoffs/P1.md) when resuming it. Existing project rules remain authoritative; importing a handoff does not start M1.5.
